@@ -1,38 +1,42 @@
 """Dependency wiring.
 
-The service is built once at startup and stashed on ``app.state`` so a request
-never pays for client construction. Swapping the session store for a shared
-one (Redis, a database) is a change to :func:`build_service` alone.
+The runner is built once at startup and stashed on ``app.state``, so a request
+never pays for client construction. Swapping the session store or the model
+factory is a change to :func:`build_runner` alone.
 """
 
 from __future__ import annotations
 
-from typing import Annotated
+from pathlib import Path
+from typing import Annotated, Any
 
 from fastapi import Depends, Request
 
 from ..config import Settings, get_settings
-from ..core.service import ConverseService, build_providers
-from ..sessions.memory import InMemorySessionStore
-from ..tools.builtin import default_registry
+from ..harness.models import ModelFactory
+from ..harness.ownership import OwnershipIndex
+from ..harness.runner import AgentRunner
 
 
-def build_service(settings: Settings) -> ConverseService:
-    store = InMemorySessionStore(
-        ttl_seconds=settings.session_ttl_seconds,
-        max_turns=settings.session_max_turns,
-    )
-    return ConverseService(
-        providers=build_providers(settings),
-        store=store,
+def build_runner(settings: Settings, model_override: Any | None = None) -> AgentRunner:
+    """Assemble the harness.
+
+    ``model_override`` exists for tests: a scripted Strands ``Model`` lets the
+    whole HTTP surface be exercised with no credential and no spend.
+    """
+    session_dir = Path(settings.session_dir)
+    return AgentRunner(
         settings=settings,
-        tools=default_registry(),
+        factory=ModelFactory(settings),
+        ownership=OwnershipIndex(session_dir / "ownership.json"),
+        session_dir=session_dir / "transcripts",
+        model_override=model_override,
     )
 
 
-def get_service(request: Request) -> ConverseService:
-    return request.app.state.service  # type: ignore[no-any-return]
+def get_runner(request: Request) -> AgentRunner:
+    return request.app.state.runner  # type: ignore[no-any-return]
 
 
-ServiceDep = Annotated[ConverseService, Depends(get_service)]
+RunnerDep = Annotated[AgentRunner, Depends(get_runner)]
 SettingsDep = Annotated[Settings, Depends(get_settings)]

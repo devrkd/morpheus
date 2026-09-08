@@ -9,7 +9,6 @@ session ownership.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
@@ -36,67 +35,7 @@ from model_harness.harness.models import ModelFactory
 from model_harness.harness.ownership import OwnershipIndex
 from model_harness.harness.runner import AgentRunner
 
-
-class ScriptedModel(Model):
-    """Replays turns as Strands stream events. Each turn is text or a tool call."""
-
-    def __init__(self, script=None):
-        self.script = list(script or [])
-        self.seen: list[list[dict]] = []
-
-    def get_config(self):
-        return {}
-
-    def update_config(self, **kw):
-        pass
-
-    async def structured_output(self, output_model, prompt, system_prompt=None, **kw):
-        yield {}
-
-    async def stream(self, messages, tool_specs=None, system_prompt=None, **kw):
-        self.seen.append([dict(m) for m in messages])
-        self.last_tool_specs = tool_specs
-        self.last_system_prompt = system_prompt
-        turn = self.script.pop(0) if self.script else {"text": "done"}
-
-        yield {"messageStart": {"role": "assistant"}}
-        if "tool" in turn:
-            name, args, tuid = turn["tool"]
-            yield {"contentBlockStart": {"start": {"toolUse": {"name": name, "toolUseId": tuid}}}}
-            yield {"contentBlockDelta": {"delta": {"toolUse": {"input": json.dumps(args)}}}}
-            yield {"contentBlockStop": {}}
-            yield {"messageStop": {"stopReason": "tool_use"}}
-        else:
-            yield {"contentBlockStart": {"start": {}}}
-            yield {"contentBlockDelta": {"delta": {"text": turn["text"]}}}
-            yield {"contentBlockStop": {}}
-            yield {"messageStop": {"stopReason": "end_turn"}}
-        yield {
-            "metadata": {
-                "usage": {"inputTokens": 11, "outputTokens": 7, "totalTokens": 18},
-                "metrics": {"latencyMs": 5},
-            }
-        }
-
-
-@pytest.fixture
-def settings() -> Settings:
-    return Settings(
-        ANTHROPIC_API_KEY="test-anthropic",
-        OPENAI_API_KEY="test-openai",
-        HARNESS_ALLOW_ANONYMOUS=True,
-        _env_file=None,
-    )
-
-
-@pytest.fixture
-def alice() -> Principal:
-    return Principal(id="alice", key_sha256=hash_key("a"), allowed_tools=frozenset({"*"}))
-
-
-@pytest.fixture
-def bob() -> Principal:
-    return Principal(id="bob", key_sha256=hash_key("b"))
+from .conftest import ScriptedModel
 
 
 def build(tmp_path: Path, settings: Settings, model: Model) -> AgentRunner:
@@ -320,3 +259,139 @@ async def test_the_ownership_index_survives_a_restart(tmp_path, settings, alice)
     assert record.turn_count == 1
     # ...and still not readable by anyone else.
     assert await reloaded.get(first.session_id, "bob") is None
+
+
+# --- the honesty contract, after the migration ----------------------------
+
+
+async def test_parameters_that_no_longer_reach_the_model_are_reported(tmp_path, settings, alice):
+    """Strands owns provider parameters now. Anything the harness no longer
+    forwards must be declared, or a caller silently gets different behaviour
+    than they asked for."""
+    from model_harness.core.types import InferenceConfig
+
+    runner = build(tmp_path, settings, ScriptedModel([{"text": "ok"}]))
+    result = await runner.converse(
+        ConverseRequest(
+            model="claude-opus-5",
+            messages=[Message(role=Role.USER, content=[TextBlock(text="hi")])],
+            inference_config=InferenceConfig(
+                temperature=0.5, top_p=0.9, max_tokens=2048, stop_sequences=["STOP"]
+            ),
+            effort="high",
+        ),
+        alice,
+    )
+    joined = " | ".join(result.adjustments)
+    assert "temperature" in joined and "top_p" in joined
+    assert "stop_sequences" in joined
+    assert "max_tokens" in joined
+    assert "effort" in joined
+
+
+async def test_a_clean_request_reports_nothing(tmp_path, settings, alice):
+    runner = build(tmp_path, settings, ScriptedModel([{"text": "ok"}]))
+    result = await runner.converse(req(), alice)
+    assert result.adjustments == []
+
+
+async def test_a_principal_ceiling_is_declared_as_unenforced(tmp_path, settings):
+    """Better a visible gap than a limit a caller believes is protecting them."""
+    capped = Principal(id="capped", key_sha256=hash_key("c"), max_tokens_per_turn=500)
+    runner = build(tmp_path, settings, ScriptedModel([{"text": "ok"}]))
+    result = await runner.converse(req(), capped)
+    assert any("not yet enforced" in a for a in result.adjustments)
+
+
+# --- streaming ------------------------------------------------------------
+
+
+async def test_streaming_yields_tool_lifecycle_then_text(tmp_path, settings, alice):
+    model = ScriptedModel(
+        [
+            {"tool": ("get_current_time", {"timezone": "UTC"}, "tu_1")},
+            {"text": "It is 09:00."},
+        ]
+    )
+    runner = build(tmp_path, settings, model)
+    session_id, events = await runner.converse_stream(req(tools=["get_current_time"]), alice)
+
+    collected = [e async for e in events]
+    kinds = [e.type for e in collected]
+
+    assert kinds[0] == "message_start"
+    assert kinds[-1] == "message_stop"
+    assert "tool_start" in kinds and "tool_end" in kinds
+    # The tool call must be announced before any text, or the client shows a
+    # frozen connection while the tool runs.
+    assert kinds.index("tool_start") < kinds.index("content_delta")
+
+    start = next(e for e in collected if e.type == "tool_start")
+    end = next(e for e in collected if e.type == "tool_end")
+    assert start.tool_name == "get_current_time"
+    assert start.tool_use_id == end.tool_use_id == "tu_1"
+    assert end.is_error is False
+    assert end.tool_output is None  # withheld unless asked for
+
+    stop = collected[-1]
+    assert stop.session_id == session_id
+    assert stop.iterations == 2
+
+
+async def test_a_tool_call_is_announced_once_not_per_delta(tmp_path, settings, alice):
+    """Strands repeats `current_tool_use` while the arguments accumulate."""
+    model = ScriptedModel(
+        [
+            {"tool": ("get_current_time", {"timezone": "UTC"}, "tu_1")},
+            {"text": "done"},
+        ]
+    )
+    runner = build(tmp_path, settings, model)
+    _, events = await runner.converse_stream(req(tools=["get_current_time"]), alice)
+    starts = [e for e in [x async for x in events] if e.type == "tool_start"]
+    assert len(starts) == 1
+
+
+async def test_streaming_persists_the_turn_and_records_it(tmp_path, settings, alice):
+    index = OwnershipIndex(tmp_path / "index.json")
+    runner = AgentRunner(
+        settings=settings,
+        factory=ModelFactory(settings),
+        ownership=index,
+        session_dir=tmp_path / "sessions",
+        model_override=ScriptedModel([{"text": "streamed"}]),
+    )
+    session_id, events = await runner.converse_stream(req("stream me"), alice)
+    [_ async for _ in events]
+
+    record = await index.get(session_id, "alice")
+    assert record is not None
+    assert record.turn_count == 1
+    assert record.preview == "stream me"
+    assert await runner.read_transcript(session_id)
+
+
+async def test_streaming_enforces_session_ownership(tmp_path, settings, alice, bob):
+    runner = build(tmp_path, settings, ScriptedModel([{"text": "ok"}]))
+    first = await runner.converse(req(), alice)
+    with pytest.raises(SessionNotFoundError):
+        await runner.converse_stream(req(session_id=first.session_id), bob)
+
+
+async def test_an_abandoned_stream_leaves_no_empty_session(tmp_path, settings, alice):
+    """A client hang-up mid-stream must not litter the session list."""
+    index = OwnershipIndex(tmp_path / "index.json")
+    runner = AgentRunner(
+        settings=settings,
+        factory=ModelFactory(settings),
+        ownership=index,
+        session_dir=tmp_path / "sessions",
+        model_override=ScriptedModel([{"text": "never read"}]),
+    )
+    session_id, events = await runner.converse_stream(req(), alice)
+
+    gen = events.__aiter__()
+    await gen.__anext__()  # message_start only, then walk away
+    await events.aclose()
+
+    assert await index.get(session_id, "alice") is None

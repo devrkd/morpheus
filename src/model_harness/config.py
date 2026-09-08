@@ -46,6 +46,17 @@ class Settings(BaseSettings):
     host: str = Field(default="127.0.0.1", alias="HARNESS_HOST")
     port: int = Field(default=8080, alias="HARNESS_PORT")
 
+    session_dir: str = Field(default="./.sessions", alias="HARNESS_SESSION_DIR")
+    """Where transcripts and the ownership index live.
+
+    Strands persists conversations here. A multi-instance deployment wants a
+    shared backend instead — `S3SessionManager` for transcripts, and the
+    ownership index moved to Redis or a database.
+    """
+
+    mcp_servers: str | None = Field(default=None, alias="HARNESS_MCP_SERVERS")
+    """JSON list of MCP servers to expose as tools."""
+
     session_ttl_seconds: int = Field(default=86_400, alias="HARNESS_SESSION_TTL_SECONDS")
     session_max_turns: int = Field(default=200, alias="HARNESS_SESSION_MAX_TURNS")
     request_timeout_seconds: float = Field(default=600.0, alias="HARNESS_REQUEST_TIMEOUT_SECONDS")

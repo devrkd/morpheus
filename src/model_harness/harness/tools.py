@@ -31,8 +31,7 @@ from strands.tools.mcp import MCPClient
 
 from ..auth.principals import Principal
 from ..errors import InvalidRequestError, ToolNotPermittedError
-from ..tools.base import ToolError
-from ..tools.builtin import _get_current_time, _http_request
+from ..tools.guarded import ToolError, current_time, http_fetch, truncate
 
 # Tools that can reach outside this process, and therefore need an explicit
 # grant on the principal rather than the default safe set.
@@ -51,7 +50,7 @@ async def get_current_time(timezone: str = "UTC") -> str:
         timezone: IANA timezone such as 'Europe/Amsterdam'. Defaults to UTC.
     """
     try:
-        return await _get_current_time({"timezone": timezone})
+        return await current_time(timezone)
     except ToolError as exc:
         return f"Error: {exc}"
 
@@ -71,7 +70,7 @@ async def http_request(url: str, method: str = "GET", body: str | None = None) -
         body: Request body, for write methods when enabled.
     """
     try:
-        return await _http_request({"url": url, "method": method, "body": body})
+        return truncate(await http_fetch(url, method, body))
     except ToolError as exc:
         # Returned, not raised: the model reads the refusal and can pick a
         # different URL instead of losing the turn.

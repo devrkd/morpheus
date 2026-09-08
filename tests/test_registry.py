@@ -1,8 +1,14 @@
+"""The model catalog — the policy layer we kept.
+
+Strands will talk to any model string handed to it. The catalog is what makes
+a request *allowed*: which ids we accept, which aliases map where, and what
+each model can actually take. Routing has to be answerable without a network
+call, so it stays static.
+"""
+
 from __future__ import annotations
 
 from model_harness.core.registry import Provider, ThinkingStyle, known_ids, resolve
-from model_harness.core.types import Effort, InferenceConfig
-from model_harness.providers.base import resolve_effort, sampling_params
 
 
 def test_resolves_canonical_ids_and_aliases():
@@ -18,38 +24,35 @@ def test_unknown_model_resolves_to_none():
     assert "claude-opus-5" in known_ids()
 
 
-def test_sampling_is_dropped_for_models_that_reject_it():
-    cfg = InferenceConfig(temperature=0.7, top_p=0.9)
-
-    params, notes = sampling_params(cfg, resolve("claude-opus-5"))
-    assert params == {}
-    assert notes and "temperature" in notes[0] and "top_p" in notes[0]
-
-    params, notes = sampling_params(cfg, resolve("gpt-4o"))
-    assert params == {"temperature": 0.7, "top_p": 0.9}
-    assert notes == []
+def test_native_ids_are_what_the_provider_is_sent():
+    """Strands passes model_id through, so ours must be the provider's."""
+    for model_id in known_ids():
+        spec = resolve(model_id)
+        assert spec.native_id
+        # Anthropic ids are complete as written — never date-suffixed.
+        if spec.provider is Provider.ANTHROPIC:
+            assert not spec.native_id[-1].isdigit() or "-" in spec.native_id
 
 
-def test_sampling_notes_are_silent_when_nothing_was_requested():
-    params, notes = sampling_params(InferenceConfig(), resolve("claude-opus-5"))
-    assert (params, notes) == ({}, [])
+def test_capability_flags_describe_what_a_model_accepts():
+    """These drive the `adjustments` a caller gets when a parameter cannot be
+    forwarded, so they have to stay accurate."""
+    opus = resolve("claude-opus-5")
+    assert opus.supports_sampling is False  # rejected by the frontier models
+    assert opus.supports_effort is True
+
+    haiku = resolve("claude-haiku-4-5")
+    assert haiku.supports_effort is False  # errors on Haiku 4.5
+
+    gpt5 = resolve("gpt-5")
+    assert gpt5.supports_sampling is False  # reasoning models reject it
+    assert gpt5.max_effort.value == "high"  # no level above high
+
+    gpt4o = resolve("gpt-4o")
+    assert gpt4o.supports_sampling is True
 
 
-def test_effort_is_clamped_or_dropped_per_model():
-    assert resolve_effort(Effort.MAX, resolve("claude-opus-5")) == (Effort.MAX, [])
-
-    effort, notes = resolve_effort(Effort.MAX, resolve("gpt-5"))
-    assert effort is Effort.HIGH
-    assert "clamped" in notes[0]
-
-    effort, notes = resolve_effort(Effort.HIGH, resolve("claude-haiku-4-5"))
-    assert effort is None
-    assert "dropped effort" in notes[0]
-
-    assert resolve_effort(None, resolve("gpt-5")) == (None, [])
-
-
-def test_reasoning_style_matches_provider_family():
+def test_reasoning_style_matches_the_provider_family():
     assert resolve("claude-opus-5").thinking is ThinkingStyle.ADAPTIVE
     assert resolve("gpt-5").thinking is ThinkingStyle.REASONING_EFFORT
     assert resolve("gpt-4o").thinking is ThinkingStyle.NONE

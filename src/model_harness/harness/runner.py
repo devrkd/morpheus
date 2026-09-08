@@ -16,12 +16,15 @@ migration.
 
 from __future__ import annotations
 
+import shutil
 import time
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
 from strands import Agent
 from strands.session import FileSessionManager
+from strands.types.exceptions import SessionException
 
 from ..auth.principals import Principal
 from ..config import Settings
@@ -35,6 +38,7 @@ from ..core.types import (
     ReasoningBlock,
     Role,
     StopReason,
+    StreamEvent,
     TextBlock,
     ToolInvocation,
     Usage,
@@ -48,6 +52,14 @@ from ..errors import (
 from . import tools as tool_layer
 from .models import ModelFactory
 from .ownership import OwnershipIndex
+
+_DEFAULT_AGENT_ID = "default"
+"""Strands' default agent id.
+
+It is the *id*, not the directory name: on disk the path is
+``agents/agent_<id>``, so passing "agent_default" here silently looks for
+``agent_agent_default`` and reports the transcript as missing.
+"""
 
 _STOP_REASONS: dict[str, StopReason] = {
     "end_turn": StopReason.END_TURN,
@@ -76,6 +88,48 @@ class AgentRunner:
         # Tests inject a scripted Model here so the loop can be driven with no
         # credential and no spend.
         self._model_override = model_override
+
+    # --- session access (authorization ours, storage Strands') ------------
+
+    def provider_status(self) -> dict[str, dict[str, object]]:
+        return self._factory.status()
+
+    async def list_sessions(self, principal: Principal, limit: int = 100):
+        return await self._ownership.list_for(principal.id, limit)
+
+    async def get_session(self, session_id: str, principal: Principal):
+        return await self._ownership.get(session_id, principal.id)
+
+    async def delete_session(self, session_id: str, principal: Principal) -> bool:
+        """Forget a session.
+
+        Ownership is dropped first: if the transcript removal fails, the
+        session is already unreachable rather than briefly readable by the
+        person who asked for it to be gone.
+        """
+        if not await self._ownership.delete(session_id, principal.id):
+            return False
+        target = self._session_dir / f"session_{session_id}"
+        if target.exists():
+            shutil.rmtree(target, ignore_errors=True)
+        return True
+
+    async def read_transcript(self, session_id: str) -> list[dict[str, Any]]:
+        """Read the stored messages for a session.
+
+        Goes through Strands' session repository rather than reading its file
+        layout directly, so the on-disk format stays theirs to change.
+        Callers must have authorized the id first — this does not check.
+        """
+        manager = FileSessionManager(session_id=session_id, storage_dir=str(self._session_dir))
+        try:
+            stored = manager.list_messages(session_id, _DEFAULT_AGENT_ID)
+        except (OSError, KeyError, SessionException):
+            # A session claimed but never written has no message directory
+            # yet, which Strands reports as a SessionException rather than as
+            # a missing-file error.
+            return []
+        return [m.message for m in stored]
 
     # --- policy -----------------------------------------------------------
 
@@ -118,25 +172,7 @@ class AgentRunner:
         except PermissionError as exc:
             raise SessionNotFoundError(f"No session '{exc.args[0]}'") from exc
 
-        adjustments: list[str] = []
-        model = self._model_override
-        if model is None:
-            model, notes = self._factory.build_with_fallbacks(spec, [])
-            adjustments.extend(notes)
-
-        system = "\n\n".join(b.text for b in request.system) if request.system else None
-
-        agent = Agent(
-            model=model,
-            tools=granted,
-            system_prompt=system,
-            # Strands persists and restores the transcript; we only ever hand
-            # it an id we have already authorized.
-            session_manager=FileSessionManager(
-                session_id=record.session_id,
-                storage_dir=str(self._session_dir),
-            ),
-        )
+        agent, adjustments = self._build_agent(request, record.session_id, spec, granted, principal)
 
         started = time.perf_counter()
         try:
@@ -166,6 +202,161 @@ class AgentRunner:
             iterations=getattr(result.metrics, "cycle_count", 1) or 1,
             adjustments=adjustments,
         )
+
+    def _build_agent(
+        self,
+        request: ConverseRequest,
+        session_id: str,
+        spec: ModelSpec,
+        granted: list[Any],
+        principal: Principal,
+    ) -> tuple[Agent, list[str]]:
+        """Construct the agent for one turn. Shared by buffered and streaming."""
+        adjustments: list[str] = []
+        model = self._model_override
+        if model is None:
+            model, notes = self._factory.build_with_fallbacks(spec, [])
+            adjustments.extend(notes)
+
+        adjustments.extend(_parameter_notes(request, spec, principal))
+
+        system = "\n\n".join(b.text for b in request.system) if request.system else None
+
+        return (
+            Agent(
+                model=model,
+                tools=granted,
+                system_prompt=system,
+                # Strands persists and restores the transcript; we only ever
+                # hand it an id we have already authorized.
+                session_manager=FileSessionManager(
+                    session_id=session_id, storage_dir=str(self._session_dir)
+                ),
+            ),
+            adjustments,
+        )
+
+    async def converse_stream(
+        self, request: ConverseRequest, principal: Principal
+    ) -> tuple[str, AsyncIterator[StreamEvent]]:
+        """Stream a turn, tool calls included.
+
+        Tools used to be refused here with a 400, because the old
+        implementation piped a single provider response straight through and a
+        tool loop is several provider calls. Strands' ``stream_async`` yields
+        one continuous stream spanning the whole loop, so that restriction was
+        an artefact of our implementation, not a property of the problem.
+
+        The session id is returned before the generator so the route can set it
+        as a header ahead of the first body byte.
+        """
+        spec = self._route(request.model, principal)
+        prompt = self._prompt_from(request)
+        granted = tool_layer.resolve(request.tools, principal)
+
+        try:
+            record = await self._ownership.claim(request.session_id, principal.id)
+        except PermissionError as exc:
+            raise SessionNotFoundError(f"No session '{exc.args[0]}'") from exc
+
+        agent, adjustments = self._build_agent(request, record.session_id, spec, granted, principal)
+
+        async def generate() -> AsyncIterator[StreamEvent]:
+            text_open = False
+            announced: set[str] = set()
+            names: dict[str, str] = {}
+            final: Any = None
+
+            # Every yield sits inside this try. A client hang-up arrives as
+            # GeneratorExit or CancelledError at whichever yield is currently
+            # suspended — including the very first one — so a guard wrapped
+            # only around the model loop would miss the common case.
+            try:
+                yield StreamEvent(
+                    type="message_start",
+                    session_id=record.session_id,
+                    provider=spec.provider.value,
+                    model=spec.id,
+                    native_model=spec.native_id,
+                    adjustments=adjustments,
+                )
+
+                async for event in agent.stream_async(prompt):
+                    if "data" in event:
+                        if not text_open:
+                            text_open = True
+                            yield StreamEvent(
+                                type="content_block_start", index=0, block_type="text"
+                            )
+                        yield StreamEvent(type="content_delta", index=0, text=event["data"])
+
+                    elif "current_tool_use" in event:
+                        use = event["current_tool_use"] or {}
+                        tuid = use.get("toolUseId")
+                        # Repeats while the arguments accumulate; announce once.
+                        if tuid and tuid not in announced:
+                            announced.add(tuid)
+                            names[tuid] = use.get("name", "")
+                            yield StreamEvent(
+                                type="tool_start",
+                                tool_use_id=tuid,
+                                tool_name=use.get("name"),
+                            )
+
+                    elif "message" in event:
+                        for block in (event["message"] or {}).get("content", []):
+                            result = block.get("toolResult")
+                            if not result:
+                                continue
+                            tuid = result.get("toolUseId", "")
+                            yield StreamEvent(
+                                type="tool_end",
+                                tool_use_id=tuid,
+                                tool_name=names.get(tuid),
+                                is_error=result.get("status") == "error",
+                                tool_output=(
+                                    _truncate_for_stream(_tool_result_text(result))
+                                    if request.stream_tool_output
+                                    else None
+                                ),
+                            )
+
+                    elif "result" in event:
+                        final = event["result"]
+
+                if text_open:
+                    yield StreamEvent(type="content_block_stop", index=0)
+
+                await self._ownership.record_turn(
+                    record.session_id,
+                    provider=spec.provider.value,
+                    model=spec.id,
+                    preview=" ".join(prompt.split()),
+                )
+
+                metrics = getattr(final, "metrics", None)
+                yield StreamEvent(
+                    type="message_stop",
+                    session_id=record.session_id,
+                    provider=spec.provider.value,
+                    model=spec.id,
+                    native_model=spec.native_id,
+                    stop_reason=_STOP_REASONS.get(
+                        getattr(final, "stop_reason", "") or "", StopReason.END_TURN
+                    ),
+                    usage=_to_usage(metrics),
+                    iterations=getattr(metrics, "cycle_count", 1) or 1,
+                )
+            except BaseException:
+                # Strands has already persisted every message produced so far
+                # — each tool call with its matching result — so a mid-loop
+                # hang-up leaves a replayable transcript and there is nothing
+                # to repair. Only a turn that never completed needs its empty
+                # session removed, so it does not litter the caller's list.
+                await self._ownership.discard_if_unused(record.session_id)
+                raise
+
+        return record.session_id, generate()
 
 
 # --- translation back to our canonical shape -----------------------------
@@ -227,3 +418,91 @@ def _to_invocations(metrics: Any) -> list[ToolInvocation]:
             )
         )
     return invocations
+
+
+_STREAM_OUTPUT_LIMIT = 4_000
+
+
+def _truncate_for_stream(text: str) -> str:
+    """Cap tool output pushed down the SSE channel.
+
+    A tool result can be hundreds of kilobytes. The full value is already in
+    the persisted transcript, and a client rendering progress does not need it
+    inline — which is why `stream_tool_output` is off by default.
+    """
+    if len(text) <= _STREAM_OUTPUT_LIMIT:
+        return text
+    return text[:_STREAM_OUTPUT_LIMIT] + "… [truncated in stream]"
+
+
+def _tool_result_text(result: dict[str, Any]) -> str:
+    """Flatten a Strands toolResult's content blocks into plain text."""
+    parts = []
+    for block in result.get("content", []) or []:
+        if "text" in block:
+            parts.append(block["text"])
+        elif "json" in block:
+            parts.append(str(block["json"]))
+    return "\n".join(parts)
+
+
+def _parameter_notes(request: ConverseRequest, spec: ModelSpec, principal: Principal) -> list[str]:
+    """Report every neutral parameter that will not reach the model.
+
+    Strands owns provider parameters now, so the harness no longer translates
+    `inference_config` or `effort` itself. Dropping them silently would break
+    the one contract this service has kept from the start: nothing is altered
+    without saying so. A caller who set `temperature` and got a different
+    answer than expected deserves to know it never left the building.
+    """
+    notes: list[str] = []
+    cfg = request.inference_config
+
+    sampling = {
+        name: value
+        for name, value in (
+            ("temperature", cfg.temperature),
+            ("top_p", cfg.top_p),
+            ("top_k", cfg.top_k),
+        )
+        if value is not None
+    }
+    if sampling:
+        names = ", ".join(sorted(sampling))
+        if spec.supports_sampling:
+            notes.append(
+                f"dropped {names}: not yet forwarded through the harness layer "
+                f"(supported by {spec.id})"
+            )
+        else:
+            notes.append(f"dropped {names}: not accepted by {spec.id}")
+
+    if cfg.stop_sequences:
+        notes.append("dropped stop_sequences: not yet forwarded through the harness layer")
+
+    if cfg.max_tokens is not None:
+        notes.append(
+            "max_tokens is set per model rather than per request in this version; "
+            f"{spec.id} is capped at {min(spec.max_output_tokens, 16_000)}"
+        )
+
+    if principal.max_tokens_per_turn is not None:
+        notes.append(
+            f"principal '{principal.id}' has a per-turn ceiling of "
+            f"{principal.max_tokens_per_turn} tokens, which is not yet enforced "
+            "in the harness layer"
+        )
+
+    if request.effort is not None:
+        if not spec.supports_effort:
+            notes.append(f"dropped effort: not accepted by {spec.id}")
+        else:
+            notes.append("dropped effort: not yet forwarded through the harness layer")
+
+    if request.stream_reasoning:
+        notes.append(
+            "stream_reasoning is not yet forwarded; reasoning blocks are "
+            "returned when the provider emits them"
+        )
+
+    return notes

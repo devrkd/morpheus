@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from ..auth.principals import PrincipalStore
 from ..config import Settings, get_settings
 from ..errors import HarnessError, ProviderRateLimitError
-from .deps import build_service
+from .deps import build_runner
 from .routes import router
 
 logger = logging.getLogger("model_harness")
@@ -65,7 +65,7 @@ def _load_principals(settings: Settings) -> PrincipalStore | None:
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings: Settings = app.state.settings
-    app.state.service = build_service(settings)
+    app.state.runner = build_runner(settings)
 
     store: PrincipalStore | None = app.state.principals
     if store is None:
@@ -81,7 +81,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             ", ".join(store.ids),
         )
 
-    for name, status in app.state.service.provider_status().items():
+    for name, status in app.state.runner.provider_status().items():
         if status["credential_detected"]:
             logger.info(
                 "provider %s: credential via %s (%s)",
@@ -99,7 +99,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app = FastAPI(
         title="model-harness",
-        version="0.2.0",
+        version="0.3.0",
         description=(
             "A Bedrock-style unified inference service. One Converse API, one model "
             "id, routed to Anthropic or OpenAI, with server-side conversation "

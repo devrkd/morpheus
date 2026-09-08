@@ -232,6 +232,14 @@ class ConverseRequest(BaseModel):
         default=False,
         description="Ask the provider for a reasoning summary instead of omitting it.",
     )
+    stream_tool_output: bool = Field(
+        default=False,
+        description=(
+            "Include each tool's full output in the stream. Off by default: a "
+            "tool result can be hundreds of kilobytes, and a client rendering "
+            "progress only needs the tool's name and status."
+        ),
+    )
     metadata: dict[str, str] = Field(default_factory=dict, max_length=16)
 
 
@@ -307,6 +315,8 @@ class StreamEvent(BaseModel):
         "content_block_start",
         "content_delta",
         "content_block_stop",
+        "tool_start",
+        "tool_end",
         "message_stop",
         "error",
     ]
@@ -320,8 +330,19 @@ class StreamEvent(BaseModel):
     block_type: Literal["text", "reasoning"] | None = None
     text: str | None = None
 
+    # Tool lifecycle. A tool turn's first act is often a tool call, so without
+    # these the client sees a silent connection for seconds and time-to-first-
+    # token means nothing.
+    tool_name: str | None = None
+    tool_use_id: str | None = None
+    tool_input: dict[str, Any] | None = None
+    tool_output: str | None = None
+    """Only populated when the request set `stream_tool_output`."""
+    is_error: bool | None = None
+
     stop_reason: StopReason | None = None
     usage: Usage | None = None
+    iterations: int | None = None
     adjustments: list[str] | None = None
 
     code: str | None = None
