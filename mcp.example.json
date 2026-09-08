@@ -25,7 +25,24 @@
       "tool_filters": {
         "allowed": ["get_*", "list_*", "search_*"]
       },
-      "_note": "tool_filters keeps this read-only. Drop it to allow writes."
+      "_note": [
+        "A personal access token is enough — there is no separate MCP token.",
+        "A classic ghp_ token is preferable: the server reads its scopes and hides",
+        "tools it cannot use. The remote endpoint needs a Copilot plan (any, incl.",
+        "Free), and PATs are disabled by default for Enterprise Managed Users.",
+        "Check yours with scripts/check-github-mcp.sh, and if the remote endpoint",
+        "refuses you, use the github-local entry below instead.",
+        "tool_filters keeps this read-only; drop it to allow writes."
+      ]
+    },
+
+    "github-local": {
+      "command": "docker",
+      "args": ["run", "-i", "--rm", "-e", "GITHUB_PERSONAL_ACCESS_TOKEN", "ghcr.io/github/github-mcp-server"],
+      "env": { "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}" },
+      "prefix": "github",
+      "disabled": true,
+      "_note": "GitHub's server run locally: no Copilot plan, no remote endpoint. Enable this OR the one above — both use the 'github' prefix, and two servers sharing a prefix collide."
     },
 
     "gdrive": {
