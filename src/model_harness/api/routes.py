@@ -11,7 +11,6 @@ from fastapi.responses import StreamingResponse
 from ..core.registry import MODELS
 from ..core.types import ConverseRequest, ConverseResponse, StreamEvent
 from ..errors import HarnessError
-from ..harness import tools as tool_layer
 from .deps import RunnerDep
 from .security import PrincipalDep
 
@@ -78,7 +77,7 @@ async def list_models(runner: RunnerDep, principal: PrincipalDep) -> dict[str, o
 
 
 @router.get("/tools", summary="Tools available to you, with their schemas")
-async def list_tools(principal: PrincipalDep) -> dict[str, object]:
+async def list_tools(runner: RunnerDep, principal: PrincipalDep) -> dict[str, object]:
     """Every registered tool, annotated with whether this principal may use it.
 
     Unlike the model catalog, forbidden tools are listed rather than hidden — a
@@ -91,7 +90,7 @@ async def list_tools(principal: PrincipalDep) -> dict[str, object]:
                 **spec,
                 "permitted": principal.may_use_tool(spec["name"], dangerous=spec["dangerous"]),
             }
-            for spec in tool_layer.describe()
+            for spec in runner.catalog.describe()
         ]
     }
 

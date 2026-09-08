@@ -1,8 +1,10 @@
 .venv/
 .env
 principals.json
+mcp.json
 .harness-key
 .harness-session
+.sessions/
 __pycache__/
 *.pyc
 .pytest_cache/

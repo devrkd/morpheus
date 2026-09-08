@@ -27,8 +27,8 @@ def _wire(monkeypatch, script):
     model = ScriptedModel(script)
     real = deps.build_runner
 
-    def build(settings, model_override=None):
-        return real(settings, model_override=model)
+    def build(settings, model_override=None, **kwargs):
+        return real(settings, model_override=model, **kwargs)
 
     monkeypatch.setattr(app_module, "build_runner", build)
     return model
@@ -417,3 +417,158 @@ def test_every_catalog_model_can_actually_be_constructed(settings):
             model = factory.build(spec, max_tokens=1024)
         config = model.get_config()
         assert config["model_id"] == spec.native_id, model_id
+
+
+# --- MCP through the HTTP surface ----------------------------------------
+
+
+@pytest.fixture
+def mcp_client(_wire, tmp_path):
+    """A client with one real MCP server, and a principal granted its tools.
+
+    Authenticated rather than anonymous on purpose: MCP tools are dangerous by
+    definition, and the harness never grants a dangerous tool without an
+    explicit grant — not even in anonymous mode. Using them therefore requires
+    a principals file, which is the security model working as intended.
+    """
+    import json as _json
+    import sys
+    from pathlib import Path as _Path
+
+    server = _Path(__file__).parent / "fixtures" / "tiny_mcp_server.py"
+    config = tmp_path / "mcp.json"
+    config.write_text(
+        _json.dumps(
+            {
+                "mcpServers": {
+                    "tiny": {
+                        "command": sys.executable,
+                        "args": [str(server)],
+                        "prefix": "tiny",
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    principals = tmp_path / "principals.json"
+    principals.write_text(
+        _json.dumps(
+            {
+                "principals": [
+                    # A glob grant: one entry covers the whole server.
+                    {
+                        "id": "alice",
+                        "key_sha256": hash_key(ALICE_KEY),
+                        "allowed_tools": ["tiny_*"],
+                    },
+                    {"id": "bob", "key_sha256": hash_key(BOB_KEY)},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    app_settings = Settings(
+        ANTHROPIC_API_KEY="test-anthropic",
+        HARNESS_PRINCIPALS_FILE=principals,
+        HARNESS_ALLOW_ANONYMOUS=False,
+        HARNESS_SESSION_DIR=str(tmp_path / "mcp-sessions"),
+        HARNESS_MCP_CONFIG=str(config),
+        _env_file=None,
+    )
+    with TestClient(app_module.create_app(app_settings)) as c:
+        yield c
+
+
+def test_configured_mcp_tools_appear_in_the_catalog(mcp_client):
+    tools = {
+        t["name"]: t for t in mcp_client.get("/v1/tools", headers=auth(ALICE_KEY)).json()["tools"]
+    }
+
+    assert "tiny_echo" in tools and "tiny_add" in tools
+    assert tools["tiny_echo"]["source"] == "mcp:tiny"
+    assert tools["tiny_echo"]["dangerous"] is True
+    assert tools["tiny_echo"]["description"] == "Echo the text back."
+    assert tools["tiny_echo"]["permitted"] is True
+    # The builtins are still there alongside them.
+    assert tools["get_current_time"]["source"] == "builtin"
+
+
+def test_a_glob_grant_covers_a_whole_server(mcp_client):
+    """Adding a server should not mean re-enumerating every principal."""
+    mine = {
+        t["name"]: t["permitted"]
+        for t in mcp_client.get("/v1/tools", headers=auth(ALICE_KEY)).json()["tools"]
+    }
+    theirs = {
+        t["name"]: t["permitted"]
+        for t in mcp_client.get("/v1/tools", headers=auth(BOB_KEY)).json()["tools"]
+    }
+
+    assert mine["tiny_echo"] and mine["tiny_add"]
+    # bob has no allowed_tools, so every MCP tool is denied but still listed —
+    # he can see what to ask an operator for.
+    assert not theirs["tiny_echo"] and not theirs["tiny_add"]
+    assert theirs["get_current_time"] is True
+
+
+def test_an_ungranted_mcp_tool_is_403(mcp_client):
+    response = mcp_client.post(
+        "/v1/converse", json=turn(tools=["tiny_echo"]), headers=auth(BOB_KEY)
+    )
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "tool_not_permitted"
+    assert "glob" in response.json()["error"]["message"]
+
+
+def test_an_mcp_tool_is_offered_to_the_model_with_its_schema(mcp_client, _wire):
+    response = mcp_client.post(
+        "/v1/converse", json=turn(tools=["tiny_echo"]), headers=auth(ALICE_KEY)
+    )
+    assert response.status_code == 200
+    assert [s["name"] for s in _wire.last_tool_specs] == ["tiny_echo"]
+    assert _wire.last_tool_specs[0]["inputSchema"]
+
+
+def test_a_model_can_actually_call_an_mcp_tool(mcp_client, script):
+    """End to end: the model asks, the harness routes over stdio to a real MCP
+    server, and the real result comes back."""
+    script[:] = [
+        {"tool": ("tiny_echo", {"text": "hello mcp"}, "tu_1")},
+        {"text": "The server said hello."},
+    ]
+    body = mcp_client.post(
+        "/v1/converse", json=turn(tools=["tiny_echo"]), headers=auth(ALICE_KEY)
+    ).json()
+
+    assert body["iterations"] == 2
+    assert [c["name"] for c in body["tool_calls"]] == ["tiny_echo"]
+    assert body["tool_calls"][0]["is_error"] is False
+
+
+def test_an_mcp_tool_result_reaches_the_stream(mcp_client, script):
+    script[:] = [
+        {"tool": ("tiny_echo", {"text": "streamed"}, "tu_1")},
+        {"text": "done"},
+    ]
+    with mcp_client.stream(
+        "POST",
+        "/v1/converse-stream",
+        json=turn(tools=["tiny_echo"], stream_tool_output=True),
+        headers=auth(ALICE_KEY),
+    ) as r:
+        raw = "".join(r.iter_text())
+
+    end = next(e for e in sse_events(raw) if e["type"] == "tool_end")
+    assert end["tool_name"] == "tiny_echo"
+    assert "echo: streamed" in end["tool_output"]
+
+
+def test_an_unconfigured_mcp_tool_is_unknown(mcp_client):
+    response = mcp_client.post(
+        "/v1/converse", json=turn(tools=["github_create_issue"]), headers=auth(ALICE_KEY)
+    )
+    assert response.status_code == 400
+    assert "Unknown tool" in response.json()["error"]["message"]

@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from ..auth.principals import PrincipalStore
 from ..config import Settings, get_settings
 from ..errors import HarnessError, ProviderRateLimitError
-from .deps import build_runner
+from .deps import build_mcp, build_runner
 from .routes import router
 
 logger = logging.getLogger("model_harness")
@@ -65,7 +65,23 @@ def _load_principals(settings: Settings) -> PrincipalStore | None:
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings: Settings = app.state.settings
-    app.state.runner = build_runner(settings)
+    mcp = build_mcp(settings)
+    # Connections open here, not per request: an MCP server is a session, and
+    # paying stdio process spawn or an HTTP handshake on every turn would
+    # dominate a short turn's latency.
+    mcp.start()
+    app.state.mcp = mcp
+    app.state.runner = build_runner(settings, mcp=mcp)
+
+    if mcp.server_names:
+        logger.info(
+            "MCP: %d server(s) — %s; %d tool(s)",
+            len(mcp.server_names),
+            ", ".join(mcp.server_names),
+            len(mcp.tools),
+        )
+    for problem in mcp.errors:
+        logger.warning("MCP: %s", problem)
 
     store: PrincipalStore | None = app.state.principals
     if store is None:
@@ -91,7 +107,10 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             )
         else:
             logger.warning("provider %s: no credential detected — %s", name, status["note"])
-    yield
+    try:
+        yield
+    finally:
+        mcp.stop()
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:

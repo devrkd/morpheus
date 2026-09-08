@@ -23,15 +23,14 @@ subprocess we had. Enabling one is a deployment decision, made in
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 from strands import tool
-from strands.tools.mcp import MCPClient
 
 from ..auth.principals import Principal
 from ..errors import InvalidRequestError, ToolNotPermittedError
 from ..tools.guarded import ToolError, current_time, http_fetch, truncate
+from .mcp import McpRegistry
 
 # Tools that can reach outside this process, and therefore need an explicit
 # grant on the principal rather than the default safe set.
@@ -83,88 +82,79 @@ BUILTIN = {
 }
 
 
-def describe() -> list[dict[str, Any]]:
-    """Catalog for ``GET /v1/tools``, built from the decorated tools."""
-    out = []
-    for name, fn in sorted(BUILTIN.items()):
-        spec = fn.tool_spec
-        out.append(
-            {
-                "name": name,
-                "description": (spec.get("description") or "").strip(),
-                "input_schema": spec.get("inputSchema", {}),
-                "dangerous": name in DANGEROUS,
-                "source": "builtin",
-            }
-        )
-    return out
+class ToolCatalog:
+    """Everything callable this turn: our guarded tools plus every MCP tool.
 
-
-def resolve(names: list[str] | None, principal: Principal) -> list[Any]:
-    """Turn requested tool names into Strands tools, enforcing our policy.
-
-    Strands does not know about principals, so authorization stays here — the
-    same two gates as before: the tool must exist, and a dangerous one must be
-    granted explicitly.
+    Authorization lives here rather than in Strands, which has no concept of a
+    principal — it executes whatever tools the agent was handed.
     """
-    if not names:
-        return []
 
-    resolved = []
-    for name in names:
-        fn = BUILTIN.get(name)
-        if fn is None:
-            raise InvalidRequestError(
-                f"Unknown tool '{name}'. See GET /v1/tools for what is available."
+    def __init__(self, mcp: McpRegistry | None = None) -> None:
+        self._mcp = mcp
+
+    def _all(self) -> dict[str, Any]:
+        tools = dict(BUILTIN)
+        if self._mcp is not None:
+            tools.update(self._mcp.tools)
+        return tools
+
+    def is_dangerous(self, name: str) -> bool:
+        if name in DANGEROUS:
+            return True
+        return self._mcp is not None and name in self._mcp.tools
+
+    def describe(self) -> list[dict[str, Any]]:
+        """Catalog for ``GET /v1/tools``, built from the tools themselves."""
+        out: list[dict[str, Any]] = []
+        for name, fn in sorted(BUILTIN.items()):
+            spec = fn.tool_spec
+            out.append(
+                {
+                    "name": name,
+                    "description": (spec.get("description") or "").strip(),
+                    "input_schema": spec.get("inputSchema", {}),
+                    "dangerous": name in DANGEROUS,
+                    "source": "builtin",
+                }
             )
-        dangerous = name in DANGEROUS
-        if not principal.may_use_tool(name, dangerous=dangerous):
-            extra = (
-                " (it can affect state outside this service, so it must be granted explicitly)"
-                if dangerous
-                else ""
-            )
-            raise ToolNotPermittedError(
-                f"Principal '{principal.id}' is not permitted to use tool '{name}'{extra}"
-            )
-        resolved.append(fn)
+        if self._mcp is not None:
+            out.extend(self._mcp.describe())
+        return out
 
-    # Stable order: the tool list renders before the system prompt and the
-    # messages, so reordering it invalidates the provider's cached prefix.
-    resolved.sort(key=lambda f: f.tool_name)
-    return resolved
+    def resolve(self, names: list[str] | None, principal: Principal) -> list[Any]:
+        """Requested names to Strands tools, enforcing our policy.
 
+        Two gates, both required: the tool must exist, and the principal must
+        be allowed it. A dangerous one — which every MCP tool is — has to be
+        granted explicitly.
+        """
+        if not names:
+            return []
 
-def mcp_clients(config_json: str | None) -> list[MCPClient]:
-    """Build MCP clients from configuration.
+        available = self._all()
+        resolved: list[Any] = []
 
-    Each entry is ``{"url": ..., "headers": {...}, "prefix": ...}``. Headers are
-    where credential brokering happens: the token lives in this service's
-    configuration and is attached at call time, so the model never holds a
-    secret it could leak into a transcript.
-    """
-    if not config_json:
-        return []
-    try:
-        entries = json.loads(config_json)
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"HARNESS_MCP_SERVERS is not valid JSON: {exc}") from exc
-    if not isinstance(entries, list):
-        # ValueError, not TypeError: every failure here is a malformed-config
-        # error that startup reports as one class.
-        raise ValueError(  # noqa: TRY004
-            "HARNESS_MCP_SERVERS must be a JSON list of server objects"
-        )
+        for name in names:
+            tool = available.get(name)
+            if tool is None:
+                raise InvalidRequestError(
+                    f"Unknown tool '{name}'. See GET /v1/tools for what is available."
+                )
+            dangerous = self.is_dangerous(name)
+            if not principal.may_use_tool(name, dangerous=dangerous):
+                extra = (
+                    " (it can affect state outside this service, so it must be "
+                    "granted explicitly — a glob such as 'github_*' grants a "
+                    "whole MCP server)"
+                    if dangerous
+                    else ""
+                )
+                raise ToolNotPermittedError(
+                    f"Principal '{principal.id}' is not permitted to use tool '{name}'{extra}"
+                )
+            resolved.append(tool)
 
-    clients = []
-    for entry in entries:
-        if not isinstance(entry, dict) or "url" not in entry:
-            raise ValueError("Each MCP server entry needs at least a 'url'")
-        clients.append(
-            MCPClient(
-                url=entry["url"],
-                headers=entry.get("headers"),
-                prefix=entry.get("prefix"),
-            )
-        )
-    return clients
+        # Stable order: the tool list renders before the system prompt and the
+        # messages, so reordering it invalidates the provider's cached prefix.
+        resolved.sort(key=lambda t: t.tool_name)
+        return resolved

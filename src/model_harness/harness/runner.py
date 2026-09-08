@@ -51,10 +51,10 @@ from ..errors import (
     SessionNotFoundError,
     UnknownModelError,
 )
-from . import tools as tool_layer
 from .errors import translated
 from .models import ModelFactory
 from .ownership import OwnershipIndex
+from .tools import ToolCatalog
 
 _DEFAULT_AGENT_ID = "default"
 """Strands' default agent id.
@@ -92,17 +92,23 @@ class AgentRunner:
         factory: ModelFactory,
         ownership: OwnershipIndex,
         session_dir: Path,
+        catalog: ToolCatalog | None = None,
         model_override: Any | None = None,
     ) -> None:
         self._settings = settings
         self._factory = factory
         self._ownership = ownership
         self._session_dir = session_dir
+        self._catalog = catalog or ToolCatalog()
         # Tests inject a scripted Model here so the loop can be driven with no
         # credential and no spend.
         self._model_override = model_override
 
     # --- session access (authorization ours, storage Strands') ------------
+
+    @property
+    def catalog(self) -> ToolCatalog:
+        return self._catalog
 
     def provider_status(self) -> dict[str, dict[str, object]]:
         return self._factory.status()
@@ -187,7 +193,7 @@ class AgentRunner:
     async def converse(self, request: ConverseRequest, principal: Principal) -> ConverseResponse:
         spec = self._route(request.model, principal)
         prompt = self._prompt_from(request)
-        granted = tool_layer.resolve(request.tools, principal)
+        granted = self._catalog.resolve(request.tools, principal)
 
         try:
             record = await self._ownership.claim(request.session_id, principal.id)
@@ -292,7 +298,7 @@ class AgentRunner:
         """
         spec = self._route(request.model, principal)
         prompt = self._prompt_from(request)
-        granted = tool_layer.resolve(request.tools, principal)
+        granted = self._catalog.resolve(request.tools, principal)
 
         try:
             record = await self._ownership.claim(request.session_id, principal.id)

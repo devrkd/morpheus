@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from model_harness.harness.tools import DANGEROUS, describe, resolve
+from model_harness.harness.tools import DANGEROUS, ToolCatalog
 from model_harness.tools.guarded import (
     ToolError,
     current_time,
@@ -111,7 +111,7 @@ def test_truncation_tells_the_model_it_happened():
 
 def test_schemas_are_generated_not_hand_written():
     """Strands derives them from type hints and the docstring."""
-    catalog = {t["name"]: t for t in describe()}
+    catalog = {t["name"]: t for t in ToolCatalog().describe()}
     assert set(catalog) == {"get_current_time", "http_request"}
     for spec in catalog.values():
         assert spec["description"]
@@ -120,17 +120,18 @@ def test_schemas_are_generated_not_hand_written():
 
 def test_only_outward_reaching_tools_are_marked_dangerous():
     assert DANGEROUS == {"http_request"}
-    catalog = {t["name"]: t["dangerous"] for t in describe()}
+    catalog = {t["name"]: t["dangerous"] for t in ToolCatalog().describe()}
     assert catalog == {"get_current_time": False, "http_request": True}
 
 
 def test_code_execution_is_not_reimplemented():
     """Strands ships real sandboxes (docker, ssh, posix), so our bare
     subprocess was a regression to keep."""
-    assert "run_python" not in {t["name"] for t in describe()}
+    assert "run_python" not in {t["name"] for t in ToolCatalog().describe()}
     assert not Path("src/model_harness/tools/builtin.py").exists()
 
 
 def test_no_tools_requested_resolves_to_none(alice):
-    assert resolve(None, alice) == []
-    assert resolve([], alice) == []
+    catalog = ToolCatalog()
+    assert catalog.resolve(None, alice) == []
+    assert catalog.resolve([], alice) == []

@@ -1,0 +1,53 @@
+{
+  "_comment": [
+    "Standard `mcpServers` format — the same file Claude Desktop and .mcp.json use,",
+    "so an existing config works here unchanged. Point HARNESS_MCP_CONFIG at a copy.",
+    "",
+    "Secrets use ${VAR} and are read from the environment at load time, so this file",
+    "is safe to commit. The token never enters the file and never reaches the model:",
+    "the harness holds it and attaches it when calling the server, so a prompt",
+    "injection cannot exfiltrate what the model never had.",
+    "",
+    "Every MCP tool counts as dangerous, so no principal gets one by default. Grant",
+    "them in the principals file, by exact name or with a glob covering a server:",
+    "  { \"id\": \"team-a\", \"allowed_tools\": [\"github_*\", \"gdrive_search\"] }",
+    "Tools are named <prefix>_<tool>, so `prefix` below decides the glob."
+  ],
+
+  "mcpServers": {
+    "github": {
+      "url": "https://api.githubcopilot.com/mcp/",
+      "headers": { "Authorization": "Bearer ${GITHUB_TOKEN}" },
+      "prefix": "github",
+      "tool_filters": {
+        "allowed": ["get_*", "list_*", "search_*"]
+      },
+      "_note": "tool_filters keeps this read-only. Drop it to allow writes."
+    },
+
+    "gdrive": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-gdrive"],
+      "env": { "GDRIVE_CREDENTIALS_PATH": "${GDRIVE_CREDENTIALS_PATH}" },
+      "prefix": "gdrive",
+      "startup_timeout": 60,
+      "_note": "stdio server. Needs a one-time OAuth flow; see its own README."
+    },
+
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "~/vscode/scratch"],
+      "prefix": "fs",
+      "disabled": true,
+      "_note": "disabled:true keeps a server configured but switched off."
+    },
+
+    "internal": {
+      "url": "https://mcp.internal.example.com/mcp/",
+      "headers": { "X-Api-Key": "${INTERNAL_MCP_KEY}" },
+      "prefix": "internal",
+      "continue_on_error": true,
+      "_note": "continue_on_error:true skips this server if its env var is missing, instead of failing startup."
+    }
+  }
+}

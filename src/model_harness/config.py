@@ -54,8 +54,14 @@ class Settings(BaseSettings):
     ownership index moved to Redis or a database.
     """
 
-    mcp_servers: str | None = Field(default=None, alias="HARNESS_MCP_SERVERS")
-    """JSON list of MCP servers to expose as tools."""
+    mcp_config: str | None = Field(default=None, alias="HARNESS_MCP_CONFIG")
+    """Path to a standard `mcpServers` JSON file.
+
+    The same format Claude Desktop and `.mcp.json` use, so an existing config
+    works unchanged: stdio servers via `command`/`args`/`env`, HTTP servers via
+    `url`/`headers`, `disabled` to switch one off, and `${VAR}` interpolation
+    so tokens live in the environment rather than the file.
+    """
 
     session_ttl_seconds: int = Field(default=86_400, alias="HARNESS_SESSION_TTL_SECONDS")
     session_max_turns: int = Field(default=200, alias="HARNESS_SESSION_MAX_TURNS")

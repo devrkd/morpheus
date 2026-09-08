@@ -20,6 +20,7 @@ import hashlib
 import json
 import secrets
 from dataclasses import dataclass, field
+from fnmatch import fnmatch
 from pathlib import Path
 
 from ..errors import InvalidCredentialError
@@ -53,9 +54,12 @@ class Principal:
 
     ``None`` permits the safe tools only. A dangerous tool — one that can
     reach outside this process — must always be named explicitly, so no
-    caller acquires side-effecting capability by default. ``"*"`` grants
-    everything, including dangerous tools, and is meant for an operator
-    principal rather than a shared key.
+    caller acquires side-effecting capability by default.
+
+    Entries may be an exact tool name, a glob (``"github_*"`` grants one MCP
+    server's whole surface, since its tools are named ``<prefix>_<tool>``), or
+    ``"*"`` for everything. A glob is the practical unit: an operator adding a
+    server should not have to re-enumerate every principal's tool list.
     """
 
     disabled: bool = False
@@ -69,7 +73,9 @@ class Principal:
             return not dangerous
         if "*" in self.allowed_tools:
             return True
-        return tool_name in self.allowed_tools
+        if tool_name in self.allowed_tools:
+            return True
+        return any("*" in pattern and fnmatch(tool_name, pattern) for pattern in self.allowed_tools)
 
 
 ANONYMOUS = Principal(

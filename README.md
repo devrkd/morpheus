@@ -302,47 +302,116 @@ byte-identical responses, so the API cannot be used to enumerate valid keys.
 
 ## Tools
 
-Without tools a model can only talk: it has no clock, no network, and no way
-to compute. Tools are what turn it into something that can act.
+Without tools a model can only talk: no clock, no network, no way to compute.
+Tools come from two places.
 
-The harness ships three, and the split matters:
+**Built in** — two, kept for specific reasons:
 
-| Tool | Dangerous | What it does |
+| Tool | Dangerous | Why it is ours |
 |---|---|---|
-| `get_current_time` | no | Reads the clock, optionally in an IANA timezone. |
-| `http_request` | yes | Fetches a public URL. GET/HEAD only by default. |
-| `run_python` | yes | Runs a short Python program in a subprocess. |
+| `get_current_time` | no | The most common thing a model is asked and cannot know. Strands ships no clock. |
+| `http_request` | yes | Strands' vended `http_request` is 35 lines and accepts any URL with any method — no address validation at all. Ours refuses internal addresses. |
 
-Request them per turn, and see the loop in the response:
+Code execution is deliberately absent: `strands.sandbox` ships docker, ssh and
+posix sandboxes, so writing another bare subprocess would be a regression.
+
+**From MCP servers** — configured, not written. See below.
+
+Request tools per turn; the response reports what ran:
 
 ```bash
 curl -s localhost:8080/v1/converse \
   -H "authorization: Bearer $(cat .harness-key)" \
   -H 'content-type: application/json' \
   -d '{"model":"claude-sonnet-5",
-       "tools":["get_current_time","run_python"],
-       "messages":[{"role":"user","content":[{"type":"text","text":"What time is it, and what is 2**200?"}]}]}'
+       "tools":["get_current_time","github_search_issues"],
+       "messages":[{"role":"user","content":[{"type":"text","text":"Any open issues about auth?"}]}]}'
 ```
 
-The response adds `tool_calls` (every execution, with its arguments, output
-and duration), `iterations` (provider round trips), and `usage` summed across
-the whole loop — a tool turn costs every request in it, not just the last.
-`scripts/tools-demo.sh` walks through five cases including the SSRF guard.
+`tool_calls` lists every execution, `iterations` counts provider round trips,
+and `usage` is summed across the whole loop — a tool turn costs every request
+in it, not just the last.
+
+`GET /v1/tools` lists everything with its schema, its `source`
+(`builtin` or `mcp:<server>`), and whether you may use it.
+
+### MCP servers
+
+Point `HARNESS_MCP_CONFIG` at a **standard `mcpServers` JSON file** — the same
+format Claude Desktop and `.mcp.json` use, so an existing config works
+unchanged. See [`mcp.example.json`](mcp.example.json).
+
+```json
+{
+  "mcpServers": {
+    "github": {
+      "url": "https://api.githubcopilot.com/mcp/",
+      "headers": { "Authorization": "Bearer ${GITHUB_TOKEN}" },
+      "prefix": "github",
+      "tool_filters": { "allowed": ["get_*", "list_*", "search_*"] }
+    },
+    "gdrive": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-gdrive"],
+      "env": { "GDRIVE_CREDENTIALS_PATH": "${GDRIVE_CREDENTIALS_PATH}" },
+      "prefix": "gdrive"
+    }
+  }
+}
+```
+
+Transport is inferred: `command` means stdio, `url` means streamable HTTP.
+`disabled: true` keeps a server configured but off. `tool_filters` narrows a
+server's surface — the `allowed` list above makes GitHub read-only.
+
+Servers connect **once at startup**, not per request: an MCP server is a
+session, and paying stdio process spawn or an HTTP handshake on every turn
+would dominate a short turn's latency. A server that fails to start is logged
+and skipped — one misconfigured integration must not take the API down with
+it.
+
+**Secrets never enter the config, or the model.** `${VAR}` is interpolated
+from the environment at load time, so the file is safe to commit. The token
+stays in this service and is attached when calling the server, so a prompt
+injection cannot exfiltrate what the model never had.
 
 ### Permissions
 
 Two gates, both required: the tool must exist, and the principal must be
-allowed it. A principal with no `allowed_tools` gets the **safe tools only** —
-dangerous ones must be named explicitly, so no key acquires side-effecting
-capability by forgetting to configure something.
+allowed it.
+
+**Every MCP tool counts as dangerous** — it runs code we did not write,
+against a system we do not control, with credentials this service holds. So
+none is granted by default, and that holds *even in anonymous mode*: a flag
+turns off authentication, it does not confer capability. Using MCP tools
+therefore requires a principals file, which is the point rather than a
+limitation.
+
+Tools are named `<prefix>_<tool>`, so a glob grants a whole server:
 
 ```json
-{ "id": "analysts", "allowed_tools": ["get_current_time", "run_python"] }
+{ "id": "team-a", "allowed_tools": ["github_*", "gdrive_search"] }
 ```
 
-`"*"` grants everything, dangerous tools included; treat it as an operator
-principal, not a shared key. `GET /v1/tools` lists every tool with
-`permitted` for the caller.
+A glob is the practical unit — adding a server should not mean re-enumerating
+every principal's tool list. `"*"` grants everything; treat it as an operator
+principal, not a shared key. `GET /v1/tools` shows `permitted: false` next to
+`dangerous: true`, so a caller can see what to ask an operator for.
+
+### Design notes
+
+- **The description is the interface.** It is the only documentation the model
+  gets, and a vague one produces wrong calls more often than a bad schema.
+  Schemas themselves are generated from type hints and docstrings.
+- **A tool never raises at the model.** A blocked address, bad arguments, a
+  name that does not exist — all come back as error *results* the model reads
+  and recovers from. Raising would abort the turn and discard the loop's work.
+- **The loop is capped** (`max_tool_iterations`, default 5). Strands treats an
+  omitted cap as *no limit*, which is how an unbounded loop once looked like a
+  stuck request.
+- **Prefixes prevent collisions.** Two servers both exposing `search` would
+  shadow each other; the second is skipped and the operator told to set a
+  distinct `prefix`.
 
 ### Why `http_request` refuses internal addresses
 
@@ -351,51 +420,11 @@ A model-chosen URL is a server-side request forgery engine. Anything the
 `169.254.169.254`, internal admin panels, a private-subnet database — or this
 harness on loopback, where the tool could read other principals' sessions.
 
-So the default is deny: only public addresses. Validation runs against the
-**resolved IPs**, not the hostname, because a DNS name can point anywhere
-(`localhost.example.com` → `127.0.0.1` is a real technique), and **every
-redirect hop is revalidated**, because a redirect target is chosen by the
-remote server. `HARNESS_TOOL_HTTP_ALLOWED_HOSTS` narrows it further.
-
-### `run_python` is not a sandbox
-
-Read this before enabling it anywhere but your own machine. The child process
-gets a CPU limit, a memory limit, a wall-clock timeout, a temporary working
-directory that is deleted afterwards, and a **bare environment** — so code
-cannot read the provider credentials this service holds (there is a test for
-exactly that). Python runs with `-I`, ignoring your site-packages and
-`PYTHON*` variables.
-
-That bounds *accidents*. It is not a security boundary: the code runs as the
-same user as the service, with the same filesystem and network access. On your
-laptop that grants the model no more than you already have. On a shared
-deployment it is remote code execution, so put it behind a container or a VM,
-or use a provider-hosted sandbox instead, and grant it to no one by default.
-
-### Design notes
-
-- **The description is the interface.** It is the only documentation the model
-  gets, and a vague one produces wrong calls far more often than a bad schema.
-- **A tool never raises at the model.** A failure — bad arguments, a blocked
-  address, a hallucinated tool name — comes back as an error *result* the
-  model can read and react to. Raising would abort the turn and discard the
-  work already done in the loop.
-- **The loop is capped** (`max_tool_iterations`, default 5). Uncapped, each
-  iteration resends the whole transcript plus every result so far.
-- **Stopping mid-loop keeps the transcript valid.** Both providers reject a
-  `tool_use` with no matching `tool_result`, so hitting the ceiling writes
-  synthetic error results rather than leaving a dangling call that would break
-  every later turn in the session.
-- **Tool order is stable**, because `tools` renders before `system` and
-  `messages`: a reordered tool list invalidates the entire cached prefix.
-- **Tool calls and results are canonical**, so a tool exchange replays across
-  a provider switch. This is where the vendors differ most — Anthropic carries
-  results as blocks on a user message, OpenAI wants a `tool`-role message each
-  — and the OpenAI adapter fans them out on the way through.
-
-Not yet supported: tools on `/v1/converse-stream`, which refuses them rather
-than silently dropping them, since one response stream cannot honestly
-represent several round trips.
+Validation runs against the **resolved IPs**, not the hostname, because a DNS
+name can point anywhere (`localhost.example.com` → `127.0.0.1` is a real
+technique), and **every redirect hop is revalidated**, because a redirect
+target is chosen by the remote server. `HARNESS_TOOL_HTTP_ALLOWED_HOSTS`
+narrows it further.
 
 ## How context is preserved
 
@@ -437,8 +466,9 @@ src/model_harness/
   core/types.py                Canonical wire + domain model
   core/registry.py             Routing table and capability table
   core/service.py              Session context, routing, authorization, tool loop
-  tools/base.py                Tool contract and registry
-  tools/builtin.py             get_current_time, http_request, run_python
+  harness/mcp.py               MCP server config, lifecycle, tool discovery
+  harness/tools.py             The tool catalog: builtin + MCP, with authorization
+  tools/guarded.py             get_current_time, http_request implementations
   tools/net.py                 SSRF guards for outbound tool requests
   providers/base.py            The adapter contract + shared translation
   providers/credentials.py     Outbound credential-chain detection
@@ -467,8 +497,6 @@ These are design boundaries of this version, not bugs:
 - **No transport security of its own.** Inbound keys are bearer tokens, so
   they are only as safe as the channel. Terminate TLS in front of this, and
   keep `HARNESS_HOST` on loopback otherwise.
-- **No tools while streaming.** `/v1/converse-stream` refuses a request that
-  asks for tools; use `/v1/converse` for those.
 - **No approval gate on tool calls.** A granted tool runs without asking. For
   anything with real side effects, a human-in-the-loop confirmation step
   belongs between the model's request and execution.
@@ -492,7 +520,7 @@ These are design boundaries of this version, not bugs:
 ## Tests
 
 ```bash
-.venv/bin/python -m pytest -q      # 194 tests, no credentials, no network
+.venv/bin/python -m pytest -q      # 145 tests, no credentials, no network
 .venv/bin/ruff check . && .venv/bin/ruff format --check .
 ```
 
