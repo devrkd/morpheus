@@ -128,6 +128,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         return JSONResponse(status_code=exc.status_code, content=exc.to_payload(), headers=headers)
 
+    @app.exception_handler(Exception)
+    async def _unhandled(request: Request, exc: Exception) -> JSONResponse:
+        """Turn any unhandled exception into the same JSON error envelope.
+
+        Without this, FastAPI returns the plain-text body "Internal Server
+        Error", and every client that parses our responses as JSON fails with
+        a parse error instead of showing the problem — which is exactly how a
+        provider misconfiguration surfaced as `Unexpected token 'I'` in the
+        web client rather than as a readable message.
+
+        The detail is logged against error_id and never returned: an
+        unhandled exception is by definition something we did not vet for
+        disclosure.
+        """
+        error = HarnessError("An unexpected error occurred")
+        logger.exception("%s | unhandled %s", error.log_line(), type(exc).__name__)
+        return JSONResponse(status_code=500, content=error.to_payload())
+
     app.include_router(router)
 
     # The web client is served by this same app, on purpose. A browser page on

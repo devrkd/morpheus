@@ -24,7 +24,7 @@ from strands.models.anthropic import AnthropicModel
 from strands.models.openai import OpenAIModel
 
 from ..config import Settings
-from ..core.registry import ModelSpec, Provider
+from ..core.registry import ModelSpec, Provider, ThinkingStyle
 from ..errors import ProviderUnavailableError
 from ..providers.credentials import CredentialInfo, detect_anthropic, detect_openai
 
@@ -58,37 +58,91 @@ class ModelFactory:
             for name, info in self.credentials.items()
         }
 
+    def credential_for(self, spec: ModelSpec) -> CredentialInfo:
+        """What was detected for this model's provider.
+
+        Used by error translation, which reinterprets a bare TypeError as a
+        configuration problem only when nothing was found.
+        """
+        return self.credentials[spec.provider.value]
+
     # --- construction -----------------------------------------------------
 
-    def build(self, spec: ModelSpec) -> Model:
+    def build(
+        self,
+        spec: ModelSpec,
+        *,
+        max_tokens: int | None = None,
+        sampling: dict[str, Any] | None = None,
+        stop_sequences: list[str] | None = None,
+    ) -> Model:
+        """Build a Strands model for one catalog entry.
+
+        Provider config is passed as **flat keyword arguments** — the
+        constructors take ``**model_config: Unpack[...Config]``, so nesting
+        them in a ``model_config=`` dict silently lands in an unknown key and
+        the model then raises ``KeyError: 'model_id'`` on first use. That was a
+        real 500 in this service; the tests below construct every catalog
+        entry for exactly that reason.
+        """
         if spec.provider is Provider.ANTHROPIC:
-            return self._anthropic(spec)
+            return self._anthropic(spec, max_tokens, sampling, stop_sequences)
         if spec.provider is Provider.OPENAI:
-            return self._openai(spec)
+            return self._openai(spec, max_tokens, sampling, stop_sequences)
         raise ProviderUnavailableError(
             f"No Strands provider wired for '{spec.provider}'",
             provider=spec.provider.value,
         )
 
-    def _anthropic(self, spec: ModelSpec) -> Model:
-        client_args: dict[str, Any] = {"timeout": self._settings.request_timeout_seconds}
-        # Only explicitly configured values are passed, so the SDK's credential
-        # chain (env key, auth token, `ant auth login` profile, workload
-        # identity) still applies. An empty string would shadow all of it.
-        if self._settings.anthropic_api_key:
-            client_args["api_key"] = self._settings.anthropic_api_key
-        if self._settings.anthropic_base_url:
-            client_args["base_url"] = self._settings.anthropic_base_url
+    def _client_args(self, provider: Provider) -> dict[str, Any]:
+        """Only explicitly configured values, so each SDK's own credential
+        chain still applies. An empty string would shadow all of it."""
+        args: dict[str, Any] = {"timeout": self._settings.request_timeout_seconds}
+        if provider is Provider.ANTHROPIC:
+            if self._settings.anthropic_api_key:
+                args["api_key"] = self._settings.anthropic_api_key
+            if self._settings.anthropic_base_url:
+                args["base_url"] = self._settings.anthropic_base_url
+        else:
+            if self._settings.openai_api_key:
+                args["api_key"] = self._settings.openai_api_key
+            if self._settings.openai_organization:
+                args["organization"] = self._settings.openai_organization
+            if self._settings.openai_project:
+                args["project"] = self._settings.openai_project
+            if self._settings.openai_base_url:
+                args["base_url"] = self._settings.openai_base_url
+        return args
 
-        return AnthropicModel(
-            client_args=client_args,
-            model_config={
-                "model_id": spec.native_id,
-                "max_tokens": min(spec.max_output_tokens, 16_000),
-            },
-        )
+    def _anthropic(
+        self,
+        spec: ModelSpec,
+        max_tokens: int | None,
+        sampling: dict[str, Any] | None,
+        stop_sequences: list[str] | None,
+    ) -> Model:
+        params: dict[str, Any] = dict(sampling or {})
+        if stop_sequences:
+            params["stop_sequences"] = stop_sequences
 
-    def _openai(self, spec: ModelSpec) -> Model:
+        config: dict[str, Any] = {
+            "model_id": spec.native_id,
+            "max_tokens": min(
+                max_tokens or self._settings.default_max_tokens, spec.max_output_tokens
+            ),
+        }
+        if params:
+            config["params"] = params
+
+        return AnthropicModel(client_args=self._client_args(Provider.ANTHROPIC), **config)
+
+    def _openai(
+        self,
+        spec: ModelSpec,
+        max_tokens: int | None,
+        sampling: dict[str, Any] | None,
+        stop_sequences: list[str] | None,
+    ) -> Model:
         if not self.credentials[Provider.OPENAI.value].detected:
             raise ProviderUnavailableError(
                 "No OpenAI credential is configured, so OpenAI models cannot be "
@@ -96,23 +150,27 @@ class ModelFactory:
                 provider=Provider.OPENAI.value,
             )
 
-        client_args: dict[str, Any] = {"timeout": self._settings.request_timeout_seconds}
-        if self._settings.openai_api_key:
-            client_args["api_key"] = self._settings.openai_api_key
-        if self._settings.openai_organization:
-            client_args["organization"] = self._settings.openai_organization
-        if self._settings.openai_project:
-            client_args["project"] = self._settings.openai_project
-        if self._settings.openai_base_url:
-            client_args["base_url"] = self._settings.openai_base_url
+        params: dict[str, Any] = dict(sampling or {})
+        if stop_sequences:
+            params["stop"] = stop_sequences
+        if max_tokens:
+            # Reasoning models count reasoning against the output ceiling and
+            # take `max_completion_tokens`; the older models take `max_tokens`.
+            key = (
+                "max_completion_tokens"
+                if spec.thinking is ThinkingStyle.REASONING_EFFORT
+                else "max_tokens"
+            )
+            params[key] = min(max_tokens, spec.max_output_tokens)
 
-        return OpenAIModel(
-            client_args=client_args,
-            model_config={"model_id": spec.native_id},
-        )
+        config: dict[str, Any] = {"model_id": spec.native_id}
+        if params:
+            config["params"] = params
+
+        return OpenAIModel(client_args=self._client_args(Provider.OPENAI), **config)
 
     def build_with_fallbacks(
-        self, spec: ModelSpec, fallbacks: list[ModelSpec]
+        self, spec: ModelSpec, fallbacks: list[ModelSpec], **kwargs: Any
     ) -> tuple[Model, list[str]]:
         """Wrap a primary model in a router that fails over to others.
 
@@ -124,9 +182,9 @@ class ModelFactory:
         """
         usable = [f for f in fallbacks if self._usable(f)]
         if not usable:
-            return self.build(spec), []
+            return self.build(spec, **kwargs), []
 
-        models = [self.build(spec), *(self.build(f) for f in usable)]
+        models = [self.build(spec, **kwargs), *(self.build(f, **kwargs) for f in usable)]
         notes = ["failover chain: " + " -> ".join([spec.id, *(f.id for f in usable)])]
         return ModelRouter(models=models), notes
 

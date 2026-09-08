@@ -28,7 +28,7 @@ from strands.types.exceptions import SessionException
 
 from ..auth.principals import Principal
 from ..config import Settings
-from ..core.registry import ModelSpec
+from ..core.registry import ModelSpec, Provider
 from ..core.registry import resolve as resolve_model
 from ..core.types import (
     ConverseOutput,
@@ -50,6 +50,7 @@ from ..errors import (
     UnknownModelError,
 )
 from . import tools as tool_layer
+from .errors import translated
 from .models import ModelFactory
 from .ownership import OwnershipIndex
 
@@ -176,7 +177,8 @@ class AgentRunner:
 
         started = time.perf_counter()
         try:
-            result = await agent.invoke_async(prompt)
+            with translated(spec.provider.value, self._factory.credential_for(spec)):
+                result = await agent.invoke_async(prompt)
         except Exception:
             await self._ownership.discard_if_unused(record.session_id)
             raise
@@ -213,12 +215,20 @@ class AgentRunner:
     ) -> tuple[Agent, list[str]]:
         """Construct the agent for one turn. Shared by buffered and streaming."""
         adjustments: list[str] = []
+        sampling, notes = _sampling_params(request, spec)
+        adjustments.extend(notes)
+        adjustments.extend(_parameter_notes(request, spec, principal))
+
         model = self._model_override
         if model is None:
-            model, notes = self._factory.build_with_fallbacks(spec, [])
-            adjustments.extend(notes)
-
-        adjustments.extend(_parameter_notes(request, spec, principal))
+            model, chain_notes = self._factory.build_with_fallbacks(
+                spec,
+                [],
+                max_tokens=_resolved_max_tokens(request, spec, principal),
+                sampling=sampling or None,
+                stop_sequences=request.inference_config.stop_sequences,
+            )
+            adjustments.extend(chain_notes)
 
         system = "\n\n".join(b.text for b in request.system) if request.system else None
 
@@ -281,48 +291,54 @@ class AgentRunner:
                     adjustments=adjustments,
                 )
 
-                async for event in agent.stream_async(prompt):
-                    if "data" in event:
-                        if not text_open:
-                            text_open = True
-                            yield StreamEvent(
-                                type="content_block_start", index=0, block_type="text"
-                            )
-                        yield StreamEvent(type="content_delta", index=0, text=event["data"])
+                stream = agent.stream_async(prompt)
 
-                    elif "current_tool_use" in event:
-                        use = event["current_tool_use"] or {}
-                        tuid = use.get("toolUseId")
-                        # Repeats while the arguments accumulate; announce once.
-                        if tuid and tuid not in announced:
-                            announced.add(tuid)
-                            names[tuid] = use.get("name", "")
-                            yield StreamEvent(
-                                type="tool_start",
-                                tool_use_id=tuid,
-                                tool_name=use.get("name"),
-                            )
+                # Wraps the *iteration*, not just the generator's creation:
+                # stream_async is lazy, so every provider failure surfaces
+                # while consuming it.
+                with translated(spec.provider.value, self._factory.credential_for(spec)):
+                    async for event in stream:
+                        if "data" in event:
+                            if not text_open:
+                                text_open = True
+                                yield StreamEvent(
+                                    type="content_block_start", index=0, block_type="text"
+                                )
+                            yield StreamEvent(type="content_delta", index=0, text=event["data"])
 
-                    elif "message" in event:
-                        for block in (event["message"] or {}).get("content", []):
-                            result = block.get("toolResult")
-                            if not result:
-                                continue
-                            tuid = result.get("toolUseId", "")
-                            yield StreamEvent(
-                                type="tool_end",
-                                tool_use_id=tuid,
-                                tool_name=names.get(tuid),
-                                is_error=result.get("status") == "error",
-                                tool_output=(
-                                    _truncate_for_stream(_tool_result_text(result))
-                                    if request.stream_tool_output
-                                    else None
-                                ),
-                            )
+                        elif "current_tool_use" in event:
+                            use = event["current_tool_use"] or {}
+                            tuid = use.get("toolUseId")
+                            # Repeats while the arguments accumulate; announce once.
+                            if tuid and tuid not in announced:
+                                announced.add(tuid)
+                                names[tuid] = use.get("name", "")
+                                yield StreamEvent(
+                                    type="tool_start",
+                                    tool_use_id=tuid,
+                                    tool_name=use.get("name"),
+                                )
 
-                    elif "result" in event:
-                        final = event["result"]
+                        elif "message" in event:
+                            for block in (event["message"] or {}).get("content", []):
+                                result = block.get("toolResult")
+                                if not result:
+                                    continue
+                                tuid = result.get("toolUseId", "")
+                                yield StreamEvent(
+                                    type="tool_end",
+                                    tool_use_id=tuid,
+                                    tool_name=names.get(tuid),
+                                    is_error=result.get("status") == "error",
+                                    tool_output=(
+                                        _truncate_for_stream(_tool_result_text(result))
+                                        if request.stream_tool_output
+                                        else None
+                                    ),
+                                )
+
+                        elif "result" in event:
+                            final = event["result"]
 
                 if text_open:
                     yield StreamEvent(type="content_block_stop", index=0)
@@ -446,58 +462,79 @@ def _tool_result_text(result: dict[str, Any]) -> str:
     return "\n".join(parts)
 
 
-def _parameter_notes(request: ConverseRequest, spec: ModelSpec, principal: Principal) -> list[str]:
-    """Report every neutral parameter that will not reach the model.
+def _sampling_params(request: ConverseRequest, spec: ModelSpec) -> tuple[dict[str, Any], list[str]]:
+    """Sampling parameters to forward, and notes for those dropped.
 
-    Strands owns provider parameters now, so the harness no longer translates
-    `inference_config` or `effort` itself. Dropping them silently would break
-    the one contract this service has kept from the start: nothing is altered
-    without saying so. A caller who set `temperature` and got a different
+    Dropping rather than forwarding is the point: the current Anthropic
+    frontier models and OpenAI's reasoning models answer a stray
+    ``temperature`` with a 400, so passing a client's harmless default through
+    would break a request that ought to succeed.
+    """
+    cfg = request.inference_config
+    requested = {
+        "temperature": cfg.temperature,
+        "top_p": cfg.top_p,
+        "top_k": cfg.top_k,
+    }
+    present = {k: v for k, v in requested.items() if v is not None}
+    if not present:
+        return {}, []
+
+    if not spec.supports_sampling:
+        names = ", ".join(sorted(present))
+        return {}, [f"dropped {names}: not accepted by {spec.id}"]
+
+    # top_k is Anthropic-only; OpenAI has no equivalent.
+    notes: list[str] = []
+    if spec.provider is not Provider.ANTHROPIC and "top_k" in present:
+        del present["top_k"]
+        notes.append("dropped top_k: no equivalent in the OpenAI API")
+    return present, notes
+
+
+def _resolved_max_tokens(request: ConverseRequest, spec: ModelSpec, principal: Principal) -> int:
+    """The output ceiling for this turn: request, model cap, principal cap."""
+    requested = request.inference_config.max_tokens or 0
+    ceilings = [c for c in (requested, spec.max_output_tokens, principal.max_tokens_per_turn) if c]
+    return min(ceilings) if ceilings else spec.max_output_tokens
+
+
+def _parameter_notes(request: ConverseRequest, spec: ModelSpec, principal: Principal) -> list[str]:
+    """Report every neutral parameter that will not reach the model verbatim.
+
+    This is the one contract the service has kept from the start: nothing is
+    altered without saying so. A caller who set `effort` and got a different
     answer than expected deserves to know it never left the building.
     """
     notes: list[str] = []
     cfg = request.inference_config
 
-    sampling = {
-        name: value
-        for name, value in (
-            ("temperature", cfg.temperature),
-            ("top_p", cfg.top_p),
-            ("top_k", cfg.top_k),
-        )
-        if value is not None
-    }
-    if sampling:
-        names = ", ".join(sorted(sampling))
-        if spec.supports_sampling:
-            notes.append(
-                f"dropped {names}: not yet forwarded through the harness layer "
-                f"(supported by {spec.id})"
-            )
-        else:
-            notes.append(f"dropped {names}: not accepted by {spec.id}")
-
-    if cfg.stop_sequences:
-        notes.append("dropped stop_sequences: not yet forwarded through the harness layer")
-
-    if cfg.max_tokens is not None:
+    requested = cfg.max_tokens or 0
+    if requested and requested > spec.max_output_tokens:
         notes.append(
-            "max_tokens is set per model rather than per request in this version; "
-            f"{spec.id} is capped at {min(spec.max_output_tokens, 16_000)}"
+            f"max_tokens {requested} lowered to {spec.max_output_tokens}, "
+            f"the output ceiling for {spec.id}"
         )
-
     if principal.max_tokens_per_turn is not None:
-        notes.append(
-            f"principal '{principal.id}' has a per-turn ceiling of "
-            f"{principal.max_tokens_per_turn} tokens, which is not yet enforced "
-            "in the harness layer"
-        )
+        effective = _resolved_max_tokens(request, spec, principal)
+        if effective == principal.max_tokens_per_turn and (
+            not requested or requested > principal.max_tokens_per_turn
+        ):
+            notes.append(
+                f"max_tokens capped at {principal.max_tokens_per_turn}, the "
+                f"per-turn ceiling for principal '{principal.id}'"
+            )
 
     if request.effort is not None:
-        if not spec.supports_effort:
-            notes.append(f"dropped effort: not accepted by {spec.id}")
-        else:
-            notes.append("dropped effort: not yet forwarded through the harness layer")
+        # Anthropic exposes this as output_config.effort and OpenAI as
+        # reasoning_effort; neither is reachable through the Strands model
+        # config yet, so it is declared rather than silently ignored.
+        reason = (
+            f"not accepted by {spec.id}"
+            if not spec.supports_effort
+            else "not yet forwarded through the harness layer"
+        )
+        notes.append(f"dropped effort: {reason}")
 
     if request.stream_reasoning:
         notes.append(

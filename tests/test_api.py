@@ -366,3 +366,54 @@ def test_the_web_client_is_served_same_origin(client):
     assert client.get("/", follow_redirects=False).status_code in (307, 308)
     for secret in ("mh_test", "sk-ant", "sk-proj"):
         assert secret not in page.text
+
+
+# --- the API must never put non-JSON on the wire -------------------------
+
+
+def test_an_unhandled_exception_still_returns_json(_wire, settings, monkeypatch):
+    """A 500 used to arrive as the plain text "Internal Server Error", so any
+    client parsing JSON failed with a parse error instead of showing the
+    problem. That is how a provider misconfiguration surfaced in the web
+    client as `Unexpected token 'I'`."""
+    from model_harness.harness.runner import AgentRunner
+
+    async def boom(self, request, principal):
+        raise KeyError("max_tokens")
+
+    monkeypatch.setattr(AgentRunner, "converse", boom)
+
+    # TestClient re-raises server exceptions by default, which would bypass
+    # the handler under test; uvicorn does not.
+    with TestClient(app_module.create_app(settings), raise_server_exceptions=False) as raw:
+        response = raw.post("/v1/converse", json=turn())
+    assert response.status_code == 500
+    assert response.headers["content-type"].startswith("application/json")
+
+    body = response.json()["error"]
+    assert body["code"] == "internal_error"
+    assert body["error_id"].startswith("err_")
+    # The exception detail is logged, never returned.
+    assert "max_tokens" not in response.text
+
+
+def test_every_catalog_model_can_actually_be_constructed(settings):
+    """The bug that caused the 500: provider config is **flat kwargs**, so
+    nesting it in `model_config=` landed in an unknown key and the model then
+    raised KeyError on first use. Nothing caught it because every other test
+    injects a scripted model."""
+    import warnings
+
+    from model_harness.core.registry import known_ids, resolve
+    from model_harness.harness.models import ModelFactory
+
+    factory = ModelFactory(settings)
+    for model_id in known_ids():
+        spec = resolve(model_id)
+        with warnings.catch_warnings():
+            # Strands warns rather than raises on an unknown config key, which
+            # is how the original bug stayed silent until request time.
+            warnings.simplefilter("error")
+            model = factory.build(spec, max_tokens=1024)
+        config = model.get_config()
+        assert config["model_id"] == spec.native_id, model_id

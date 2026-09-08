@@ -48,13 +48,14 @@ def build(tmp_path: Path, settings: Settings, model: Model) -> AgentRunner:
     )
 
 
-def req(text="hello", model="claude-opus-5", session_id=None, tools=None, system=None):
+def req(text="hello", model="claude-opus-5", session_id=None, tools=None, system=None, effort=None):
     return ConverseRequest(
         model=model,
         session_id=session_id,
         messages=[Message(role=Role.USER, content=[TextBlock(text=text)])],
         tools=tools,
         system=[SystemBlock(text=system)] if system else None,
+        effort=effort,
     )
 
 
@@ -264,10 +265,10 @@ async def test_the_ownership_index_survives_a_restart(tmp_path, settings, alice)
 # --- the honesty contract, after the migration ----------------------------
 
 
-async def test_parameters_that_no_longer_reach_the_model_are_reported(tmp_path, settings, alice):
-    """Strands owns provider parameters now. Anything the harness no longer
-    forwards must be declared, or a caller silently gets different behaviour
-    than they asked for."""
+async def test_sampling_is_dropped_for_models_that_reject_it(tmp_path, settings, alice):
+    """The frontier Anthropic models and OpenAI's reasoning models answer a
+    stray temperature with a 400, so forwarding a caller's harmless default
+    would break a request that ought to succeed."""
     from model_harness.core.types import InferenceConfig
 
     runner = build(tmp_path, settings, ScriptedModel([{"text": "ok"}]))
@@ -275,32 +276,87 @@ async def test_parameters_that_no_longer_reach_the_model_are_reported(tmp_path, 
         ConverseRequest(
             model="claude-opus-5",
             messages=[Message(role=Role.USER, content=[TextBlock(text="hi")])],
-            inference_config=InferenceConfig(
-                temperature=0.5, top_p=0.9, max_tokens=2048, stop_sequences=["STOP"]
-            ),
-            effort="high",
+            inference_config=InferenceConfig(temperature=0.5, top_p=0.9),
         ),
         alice,
     )
     joined = " | ".join(result.adjustments)
     assert "temperature" in joined and "top_p" in joined
-    assert "stop_sequences" in joined
-    assert "max_tokens" in joined
-    assert "effort" in joined
+    assert "not accepted by claude-opus-5" in joined
+
+
+def test_sampling_reaches_a_model_that_accepts_it(settings):
+    """Verified on the real provider config, not just reported."""
+    from model_harness.core.registry import resolve as resolve_model
+    from model_harness.harness.models import ModelFactory
+
+    factory = ModelFactory(settings)
+    model = factory.build(resolve_model("gpt-4o"), max_tokens=2048, sampling={"temperature": 0.3})
+    params = model.get_config()["params"]
+    assert params["temperature"] == 0.3
+    assert params["max_tokens"] == 2048
+
+
+async def test_top_k_is_dropped_for_openai_only(tmp_path, settings, alice):
+    from model_harness.core.types import InferenceConfig
+
+    runner = build(tmp_path, settings, ScriptedModel([{"text": "ok"}]))
+    result = await runner.converse(
+        ConverseRequest(
+            model="gpt-4o",
+            messages=[Message(role=Role.USER, content=[TextBlock(text="hi")])],
+            inference_config=InferenceConfig(top_k=40, temperature=0.2),
+        ),
+        alice,
+    )
+    assert any("top_k" in a and "no equivalent" in a for a in result.adjustments)
+
+
+async def test_max_tokens_is_capped_to_the_model_ceiling(tmp_path, settings, alice):
+    from model_harness.core.types import InferenceConfig
+
+    runner = build(tmp_path, settings, ScriptedModel([{"text": "ok"}]))
+    result = await runner.converse(
+        ConverseRequest(
+            model="gpt-4o",
+            messages=[Message(role=Role.USER, content=[TextBlock(text="hi")])],
+            inference_config=InferenceConfig(max_tokens=100_000),
+        ),
+        alice,
+    )
+    assert any("lowered to 16384" in a for a in result.adjustments)
+
+
+async def test_a_principal_ceiling_is_enforced_not_just_declared(tmp_path, settings):
+    """It used to be reported as unenforced. It is now applied."""
+    capped = Principal(id="capped", key_sha256=hash_key("c"), max_tokens_per_turn=500)
+    runner = build(tmp_path, settings, ScriptedModel([{"text": "ok"}]))
+    result = await runner.converse(req(), capped)
+    assert any("per-turn ceiling for principal 'capped'" in a for a in result.adjustments)
+
+
+def test_the_principal_ceiling_reaches_the_provider_config(settings):
+    from model_harness.core.registry import resolve as resolve_model
+    from model_harness.harness.models import ModelFactory
+
+    factory = ModelFactory(settings)
+    model = factory.build(resolve_model("claude-opus-5"), max_tokens=500)
+    assert model.get_config()["max_tokens"] == 500
+
+
+async def test_effort_is_declared_as_not_forwarded(tmp_path, settings, alice):
+    """Anthropic exposes it as output_config.effort and OpenAI as
+    reasoning_effort; neither is reachable through the Strands config yet, so
+    it is declared rather than silently ignored."""
+    runner = build(tmp_path, settings, ScriptedModel([{"text": "ok"}]))
+    result = await runner.converse(req(effort="high"), alice)
+    assert any("dropped effort" in a for a in result.adjustments)
 
 
 async def test_a_clean_request_reports_nothing(tmp_path, settings, alice):
     runner = build(tmp_path, settings, ScriptedModel([{"text": "ok"}]))
     result = await runner.converse(req(), alice)
     assert result.adjustments == []
-
-
-async def test_a_principal_ceiling_is_declared_as_unenforced(tmp_path, settings):
-    """Better a visible gap than a limit a caller believes is protecting them."""
-    capped = Principal(id="capped", key_sha256=hash_key("c"), max_tokens_per_turn=500)
-    runner = build(tmp_path, settings, ScriptedModel([{"text": "ok"}]))
-    result = await runner.converse(req(), capped)
-    assert any("not yet enforced" in a for a in result.adjustments)
 
 
 # --- streaming ------------------------------------------------------------
