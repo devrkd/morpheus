@@ -1,0 +1,10 @@
+.venv/
+.env
+principals.json
+.harness-key
+.harness-session
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+*.egg-info/

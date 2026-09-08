@@ -1,0 +1,43 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "model-harness"
+version = "0.1.0"
+description = "Bedrock-style unified inference service that routes one Converse API to Anthropic and OpenAI"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "anthropic>=1.4",
+    "openai>=3.8",
+    # Layer 2 + 3: the agent loop, tool execution, MCP, provider adapters and
+    # session persistence. Replaces our hand-written equivalents.
+    "strands-agents>=1.54",
+    "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "httpx>=0.27",
+    "ruff>=0.5",
+]
+
+[project.scripts]
+model-harness = "model_harness.__main__:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/model_harness"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"

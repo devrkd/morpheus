@@ -1,0 +1,24 @@
+{
+  "principals": [
+    {
+      "id": "team-exchange",
+      "key_sha256": "cefb910cce230828044c9b37596ae3e32703ca25666c874eec275b9ef508ab93",
+      "allowed_models": ["claude-sonnet-5", "gpt-5"],
+      "max_tokens_per_turn": 4000
+    },
+    {
+      "id": "batch-jobs",
+      "key_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "allowed_models": ["claude-haiku-4-5"]
+    },
+    {
+      "id": "platform-team",
+      "key_sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+    },
+    {
+      "id": "retired-service",
+      "key_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+      "disabled": true
+    }
+  ]
+}
