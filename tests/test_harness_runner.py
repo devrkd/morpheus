@@ -48,7 +48,15 @@ def build(tmp_path: Path, settings: Settings, model: Model) -> AgentRunner:
     )
 
 
-def req(text="hello", model="claude-opus-5", session_id=None, tools=None, system=None, effort=None):
+def req(
+    text="hello",
+    model="claude-opus-5",
+    session_id=None,
+    tools=None,
+    system=None,
+    effort=None,
+    max_tool_iterations=None,
+):
     return ConverseRequest(
         model=model,
         session_id=session_id,
@@ -56,6 +64,7 @@ def req(text="hello", model="claude-opus-5", session_id=None, tools=None, system
         tools=tools,
         system=[SystemBlock(text=system)] if system else None,
         effort=effort,
+        max_tool_iterations=max_tool_iterations,
     )
 
 
@@ -451,3 +460,110 @@ async def test_an_abandoned_stream_leaves_no_empty_session(tmp_path, settings, a
     await events.aclose()
 
     assert await index.get(session_id, "alice") is None
+
+
+# --- the loop must be bounded --------------------------------------------
+
+
+class NeverStopsModel(ScriptedModel):
+    """Asks for a tool on every turn, forever.
+
+    Reproduces an apparently stuck request: Strands treats an omitted cap as
+    *no limit*, so before `limits` was passed this ran until something else
+    gave out.
+    """
+
+    def __init__(self):
+        super().__init__([])
+        self.turns = 0
+
+    async def stream(self, messages, tool_specs=None, system_prompt=None, **kw):
+        self.turns += 1
+        self.last_tool_specs = tool_specs
+        self.last_system_prompt = system_prompt
+        yield {"messageStart": {"role": "assistant"}}
+        yield {
+            "contentBlockStart": {
+                "start": {
+                    "toolUse": {
+                        "name": "get_current_time",
+                        "toolUseId": f"tu_{self.turns}",
+                    }
+                }
+            }
+        }
+        yield {"contentBlockDelta": {"delta": {"toolUse": {"input": "{}"}}}}
+        yield {"contentBlockStop": {}}
+        yield {"messageStop": {"stopReason": "tool_use"}}
+        yield {
+            "metadata": {
+                "usage": {"inputTokens": 5, "outputTokens": 2, "totalTokens": 7},
+                "metrics": {"latencyMs": 1},
+            }
+        }
+
+
+async def test_a_runaway_tool_loop_is_capped(tmp_path, settings, alice):
+    model = NeverStopsModel()
+    runner = build(tmp_path, settings, model)
+
+    result = await runner.converse(req(tools=["get_current_time"], max_tool_iterations=3), alice)
+    assert model.turns == 3, f"loop ran {model.turns} turns, expected the cap"
+    assert result.iterations <= 3
+
+
+async def test_the_default_cap_applies_when_the_request_is_silent(tmp_path, settings, alice):
+    """The dangerous case: a client that never thought about a cap."""
+    model = NeverStopsModel()
+    runner = build(tmp_path, settings, model)
+    await runner.converse(req(tools=["get_current_time"]), alice)
+    assert model.turns == AgentRunner.DEFAULT_TURNS
+
+
+async def test_a_capped_turn_leaves_a_replayable_transcript(tmp_path, settings, alice):
+    """Strands checks caps at the top of each iteration, so a tool requested by
+    the previous turn always completes — no tool call is left without its
+    result, which would break every later turn in the session."""
+    model = NeverStopsModel()
+    runner = build(tmp_path, settings, model)
+    result = await runner.converse(req(tools=["get_current_time"], max_tool_iterations=2), alice)
+
+    stored = await runner.read_transcript(result.session_id)
+    uses, results = set(), set()
+    for message in stored:
+        for block in message.get("content", []):
+            if "toolUse" in block:
+                uses.add(block["toolUse"]["toolUseId"])
+            if "toolResult" in block:
+                results.add(block["toolResult"]["toolUseId"])
+    assert uses, "expected tool calls in the transcript"
+    assert uses == results, f"dangling tool calls: {uses ^ results}"
+
+
+async def test_the_streaming_loop_is_capped_too(tmp_path, settings, alice):
+    model = NeverStopsModel()
+    runner = build(tmp_path, settings, model)
+    _, events = await runner.converse_stream(
+        req(tools=["get_current_time"], max_tool_iterations=2), alice
+    )
+    [_ async for _ in events]
+    assert model.turns == 2
+
+
+async def test_a_stalled_turn_times_out_rather_than_hanging(tmp_path, settings, alice):
+    """Without a wall-clock ceiling a stalled provider holds the connection
+    open for the SDK's whole timeout with nothing to show the caller."""
+    import asyncio
+
+    from model_harness.errors import ProviderTimeoutError
+
+    class Stalls(ScriptedModel):
+        async def stream(self, *a, **kw):
+            await asyncio.sleep(30)
+            yield {}
+
+    settings.turn_timeout_seconds = 0.2
+    runner = build(tmp_path, settings, Stalls())
+
+    with pytest.raises(ProviderTimeoutError, match="did not finish"):
+        await runner.converse(req(), alice)

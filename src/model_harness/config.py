@@ -59,7 +59,15 @@ class Settings(BaseSettings):
 
     session_ttl_seconds: int = Field(default=86_400, alias="HARNESS_SESSION_TTL_SECONDS")
     session_max_turns: int = Field(default=200, alias="HARNESS_SESSION_MAX_TURNS")
-    request_timeout_seconds: float = Field(default=600.0, alias="HARNESS_REQUEST_TIMEOUT_SECONDS")
+    request_timeout_seconds: float = Field(default=120.0, alias="HARNESS_REQUEST_TIMEOUT_SECONDS")
+    """Per-HTTP-call timeout handed to the provider SDKs."""
+
+    turn_timeout_seconds: float = Field(default=300.0, alias="HARNESS_TURN_TIMEOUT_SECONDS")
+    """Wall-clock ceiling on a whole turn, tool loop included.
+
+    Separate from the per-call timeout: a loop of five fast calls can still
+    run for minutes, and without this a stalled turn holds a connection open
+    with nothing to show the caller."""
 
     # Default output ceilings. Streaming gets the larger one because HTTP
     # timeouts are not a concern there; a non-streaming request with a huge

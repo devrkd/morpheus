@@ -16,6 +16,7 @@ migration.
 
 from __future__ import annotations
 
+import asyncio
 import shutil
 import time
 from collections.abc import AsyncIterator
@@ -46,6 +47,7 @@ from ..core.types import (
 from ..errors import (
     InvalidRequestError,
     ModelNotPermittedError,
+    ProviderTimeoutError,
     SessionNotFoundError,
     UnknownModelError,
 )
@@ -73,6 +75,16 @@ _STOP_REASONS: dict[str, StopReason] = {
 
 
 class AgentRunner:
+    DEFAULT_TURNS = 5
+    """Loop iterations allowed when a request does not say.
+
+    Strands treats an omitted cap as *no limit*, so leaving `limits` unset
+    lets a model that keeps calling tools run until something else gives out —
+    which is what an apparently stuck request looks like from the outside.
+    Uncapped is also a runaway bill: every iteration resends the transcript
+    plus every tool result so far.
+    """
+
     def __init__(
         self,
         *,
@@ -148,6 +160,15 @@ class AgentRunner:
             )
         return spec
 
+    def _limits(self, request: ConverseRequest) -> dict[str, int]:
+        """Per-invocation budget for the agent loop.
+
+        Capped at the top of each iteration, so tools requested by the
+        previous turn always finish first and the transcript is left
+        reinvokable — the invariant we used to hand-build.
+        """
+        return {"turns": request.max_tool_iterations or self.DEFAULT_TURNS}
+
     @staticmethod
     def _prompt_from(request: ConverseRequest) -> str:
         last = request.messages[-1]
@@ -177,8 +198,17 @@ class AgentRunner:
 
         started = time.perf_counter()
         try:
-            with translated(spec.provider.value, self._factory.credential_for(spec)):
-                result = await agent.invoke_async(prompt)
+            async with asyncio.timeout(self._settings.turn_timeout_seconds):
+                with translated(spec.provider.value, self._factory.credential_for(spec)):
+                    result = await agent.invoke_async(prompt, limits=self._limits(request))
+        except TimeoutError as exc:
+            await self._ownership.discard_if_unused(record.session_id)
+            raise ProviderTimeoutError(
+                f"The turn did not finish within "
+                f"{self._settings.turn_timeout_seconds:.0f}s and was cancelled.",
+                provider=spec.provider.value,
+                detail=f"{type(exc).__name__}: {exc}",
+            ) from exc
         except Exception:
             await self._ownership.discard_if_unused(record.session_id)
             raise
@@ -291,7 +321,7 @@ class AgentRunner:
                     adjustments=adjustments,
                 )
 
-                stream = agent.stream_async(prompt)
+                stream = agent.stream_async(prompt, limits=self._limits(request))
 
                 # Wraps the *iteration*, not just the generator's creation:
                 # stream_async is lazy, so every provider failure surfaces
