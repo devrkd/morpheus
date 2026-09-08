@@ -29,12 +29,44 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from strands.tools.mcp import MCPClient
 
 logger = logging.getLogger("model_harness.mcp")
+
+
+@dataclass
+class ServerStatus:
+    """What became of one configured server.
+
+    Kept for every server in the file, not just the ones that worked — a
+    server that is off or broken is exactly what someone checking status
+    needs to see. "Configured but absent from the list" is the one answer
+    that helps nobody.
+    """
+
+    name: str
+    state: str
+    """One of: connected, failed, disabled."""
+
+    transport: str = "unknown"
+    tools: list[str] = field(default_factory=list)
+    error: str | None = None
+
+    def summary(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "state": self.state,
+            "transport": self.transport,
+            "tool_count": len(self.tools),
+            "tools": sorted(self.tools),
+            # Config values (a command path, a URL), never an interpolated
+            # secret — those live in headers and env, which are not echoed.
+            "error": self.error,
+        }
 
 
 class McpRegistry:
@@ -50,6 +82,7 @@ class McpRegistry:
         self._clients: list[MCPClient] = []
         self._tools: dict[str, Any] = {}
         self._servers: dict[str, str] = {}
+        self._status: dict[str, ServerStatus] = {}
         self.errors: list[str] = []
 
     @property
@@ -63,14 +96,41 @@ class McpRegistry:
     def server_names(self) -> list[str]:
         return sorted(set(self._servers.values()))
 
+    @property
+    def configured(self) -> bool:
+        return self._config_path is not None
+
+    def status(self) -> list[dict[str, Any]]:
+        """Per-server status, for an authenticated caller."""
+        return [self._status[name].summary() for name in sorted(self._status)]
+
+    def counts(self) -> dict[str, Any]:
+        """Aggregate counts only — safe for the unauthenticated health route.
+
+        Server names and error text stay out: a name can be an internal
+        hostname, and health is open by design.
+        """
+        states = [st.state for st in self._status.values()]
+        return {
+            "configured": self._config_path is not None,
+            "servers_configured": len(states),
+            "servers_connected": states.count("connected"),
+            "servers_failed": states.count("failed"),
+            "servers_disabled": states.count("disabled"),
+            "tools": len(self._tools),
+        }
+
     # --- lifecycle --------------------------------------------------------
 
     def start(self) -> None:
         """Connect to every enabled server and discover its tools.
 
-        A server that fails to start is recorded and skipped rather than
-        taking the service down with it. One misconfigured integration should
-        not stop every other tool, or the API, from working.
+        Servers are loaded **one at a time**, deliberately. Handing
+        ``load_servers`` the whole file returns a flat client list with no
+        names attached, so a server it silently skips (a missing env var, say)
+        shifts every later index and tools get attributed to the wrong server.
+        One call per server keeps names exact and makes each failure
+        attributable to the thing that failed.
         """
         if self._config_path is None:
             return
@@ -80,48 +140,81 @@ class McpRegistry:
             return
 
         try:
-            clients = MCPClient.load_servers(str(self._config_path))
+            servers = self._read_config()
         except (OSError, ValueError, json.JSONDecodeError) as exc:
             self.errors.append(f"MCP config {self._config_path} is unusable: {exc}")
             logger.warning("%s", self.errors[-1])
             return
 
-        names = self._configured_names()
+        for name, cfg in servers.items():
+            transport = cfg.get("transport", "stdio" if cfg.get("command") else "http")
 
-        for index, client in enumerate(clients):
-            label = names[index] if index < len(names) else f"server_{index}"
-            started = False
-            try:
-                client.start()
-                started = True
-                discovered = client.list_tools_sync()
-            except Exception as exc:  # noqa: BLE001 - any transport failure
-                self.errors.append(f"MCP server '{label}' failed to start: {exc}")
-                logger.warning("%s", self.errors[-1])
-                # Only stop what actually started; stopping a client that never
-                # connected leaves its shutdown coroutine unawaited.
-                if started:
-                    self._safe_stop(client)
+            if cfg.get("disabled"):
+                self._status[name] = ServerStatus(name=name, state="disabled", transport=transport)
                 continue
 
-            self._clients.append(client)
-            for tool in discovered:
-                if tool.tool_name in self._tools:
-                    self.errors.append(
-                        f"MCP tool '{tool.tool_name}' from '{label}' collides with an "
-                        "existing tool and was skipped; set a distinct 'prefix'"
-                    )
-                    logger.warning("%s", self.errors[-1])
-                    continue
-                self._tools[tool.tool_name] = tool
-                self._servers[tool.tool_name] = label
+            self._start_one(name, cfg, transport)
 
-            logger.info(
-                "MCP server '%s': %d tool(s) — %s",
-                label,
-                len(discovered),
-                ", ".join(t.tool_name for t in discovered) or "none",
+    def _start_one(self, name: str, cfg: dict[str, Any], transport: str) -> None:
+        """Bring up one server, recording whatever happens to it."""
+
+        def fail(reason: str) -> None:
+            self.errors.append(f"MCP server '{name}': {reason}")
+            logger.warning("%s", self.errors[-1])
+            self._status[name] = ServerStatus(
+                name=name, state="failed", transport=transport, error=reason
             )
+
+        try:
+            clients = MCPClient.load_servers({name: cfg})
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            # Most often a missing ${VAR}. Reported against this server only,
+            # so one unset token does not disable every other integration.
+            fail(str(exc))
+            return
+
+        if not clients:
+            fail("its configuration produced no client")
+            return
+
+        client = clients[0]
+        started = False
+        try:
+            client.start()
+            started = True
+            discovered = client.list_tools_sync()
+        except Exception as exc:  # noqa: BLE001 - any transport failure
+            fail(f"failed to start: {exc}")
+            # Only stop what actually started; stopping a client that never
+            # connected leaves its shutdown coroutine unawaited.
+            if started:
+                self._safe_stop(client)
+            return
+
+        self._clients.append(client)
+        mine: list[str] = []
+        for tool in discovered:
+            if tool.tool_name in self._tools:
+                self.errors.append(
+                    f"MCP tool '{tool.tool_name}' from '{name}' collides with an "
+                    "existing tool and was skipped; set a distinct 'prefix'"
+                )
+                logger.warning("%s", self.errors[-1])
+                continue
+            self._tools[tool.tool_name] = tool
+            self._servers[tool.tool_name] = name
+            mine.append(tool.tool_name)
+
+        self._status[name] = ServerStatus(
+            name=name, state="connected", transport=transport, tools=mine
+        )
+        logger.info(
+            "MCP server '%s' (%s): %d tool(s) — %s",
+            name,
+            transport,
+            len(mine),
+            ", ".join(mine) or "none",
+        )
 
     def stop(self) -> None:
         for client in self._clients:
@@ -129,6 +222,7 @@ class McpRegistry:
         self._clients.clear()
         self._tools.clear()
         self._servers.clear()
+        self._status.clear()
 
     @staticmethod
     def _safe_stop(client: MCPClient) -> None:
@@ -141,25 +235,37 @@ class McpRegistry:
 
     # --- helpers ----------------------------------------------------------
 
-    def _configured_names(self) -> list[str]:
-        """Server names in config order.
+    def _read_config(self) -> dict[str, dict[str, Any]]:
+        """The server table, cleaned up for consumption.
 
-        ``load_servers`` returns clients but not their names, and the order
-        matches the enabled servers in the file, so the names are recovered
-        here to label tools and error messages.
+        Keys beginning with ``_`` are treated as comments — that is how the
+        example config annotates itself, and a bare string there would
+        otherwise be rejected as a malformed server.
+
+        ``continue_on_error`` is deliberately *not* forced on. It makes
+        Strands skip a broken server and return nothing, which swallows the
+        reason: "its configuration produced no client" instead of
+        "environment variable 'GITHUB_TOKEN' is not set". Loading one server
+        at a time already gives the isolation, so letting the error surface
+        keeps the message actionable.
         """
-        try:
-            raw = json.loads(self._config_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return []
-        servers = raw.get("mcpServers", raw)
-        if not isinstance(servers, dict):
-            return []
-        return [
-            name
-            for name, cfg in servers.items()
-            if not (isinstance(cfg, dict) and cfg.get("disabled"))
-        ]
+        raw = json.loads(self._config_path.read_text(encoding="utf-8"))
+        table = raw.get("mcpServers", raw)
+        if not isinstance(table, dict):
+            # ValueError throughout: every failure here is one class of
+            # malformed-config error that start() reports the same way.
+            raise ValueError(  # noqa: TRY004
+                "expected an object of server name -> config"
+            )
+
+        cleaned: dict[str, dict[str, Any]] = {}
+        for name, cfg in table.items():
+            if name.startswith("_"):
+                continue
+            if not isinstance(cfg, dict):
+                raise ValueError(f"server '{name}' must be an object")  # noqa: TRY004
+            cleaned[name] = dict(cfg)
+        return cleaned
 
     def describe(self) -> list[dict[str, Any]]:
         """Catalog entries for ``GET /v1/tools``."""

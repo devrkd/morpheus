@@ -98,6 +98,21 @@ class ToolCatalog:
             tools.update(self._mcp.tools)
         return tools
 
+    def mcp_status(self) -> list[dict[str, Any]]:
+        return self._mcp.status() if self._mcp is not None else []
+
+    def mcp_counts(self) -> dict[str, Any]:
+        if self._mcp is None:
+            return {
+                "configured": False,
+                "servers_configured": 0,
+                "servers_connected": 0,
+                "servers_failed": 0,
+                "servers_disabled": 0,
+                "tools": 0,
+            }
+        return self._mcp.counts()
+
     def is_dangerous(self, name: str) -> bool:
         if name in DANGEROUS:
             return True

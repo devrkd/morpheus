@@ -8,6 +8,9 @@
     "the harness holds it and attaches it when calling the server, so a prompt",
     "injection cannot exfiltrate what the model never had.",
     "",
+    "A server whose ${VAR} is unset is reported as failed on its own; the others",
+    "still load, and GET /v1/tools names the missing variable.",
+    "",
     "Every MCP tool counts as dangerous, so no principal gets one by default. Grant",
     "them in the principals file, by exact name or with a glob covering a server:",
     "  { \"id\": \"team-a\", \"allowed_tools\": [\"github_*\", \"gdrive_search\"] }",
@@ -46,8 +49,7 @@
       "url": "https://mcp.internal.example.com/mcp/",
       "headers": { "X-Api-Key": "${INTERNAL_MCP_KEY}" },
       "prefix": "internal",
-      "continue_on_error": true,
-      "_note": "continue_on_error:true skips this server if its env var is missing, instead of failing startup."
+      "_note": "Servers are loaded independently, so a missing token here disables only this one. Avoid continue_on_error:true — it hides the reason a server did not start."
     }
   }
 }

@@ -30,6 +30,9 @@ async def health(runner: RunnerDep) -> dict[str, object]:
         "status": "ok" if usable else "degraded",
         "usable_providers": sorted(usable),
         "providers": status,
+        # Counts only: a server name can be an internal hostname, and this
+        # route is open. Names and errors are on GET /v1/tools, behind auth.
+        "mcp": runner.mcp_counts(),
     }
 
 
@@ -91,7 +94,10 @@ async def list_tools(runner: RunnerDep, principal: PrincipalDep) -> dict[str, ob
                 "permitted": principal.may_use_tool(spec["name"], dangerous=spec["dangerous"]),
             }
             for spec in runner.catalog.describe()
-        ]
+        ],
+        # Every configured server, including ones that are off or failed to
+        # start: "configured but missing from the list" helps nobody debug.
+        "mcp_servers": runner.mcp_status(),
     }
 
 

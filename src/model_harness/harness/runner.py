@@ -113,6 +113,14 @@ class AgentRunner:
     def provider_status(self) -> dict[str, dict[str, object]]:
         return self._factory.status()
 
+    def mcp_status(self) -> list[dict[str, Any]]:
+        """Per-server MCP status, for an authenticated caller."""
+        return self._catalog.mcp_status()
+
+    def mcp_counts(self) -> dict[str, Any]:
+        """Aggregate MCP counts, safe for the open health route."""
+        return self._catalog.mcp_counts()
+
     async def list_sessions(self, principal: Principal, limit: int = 100):
         return await self._ownership.list_for(principal.id, limit)
 

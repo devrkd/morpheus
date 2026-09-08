@@ -364,6 +364,42 @@ Transport is inferred: `command` means stdio, `url` means streamable HTTP.
 `disabled: true` keeps a server configured but off. `tool_filters` narrows a
 server's surface — the `allowed` list above makes GitHub read-only.
 
+### Seeing whether they are up
+
+The web client's sidebar has a **Tools** panel: one group per configured
+server with a status dot — green connected, red failed, grey disabled — its
+transport and tool count, the failure reason inline when there is one, and a
+checkbox per tool that enables it for the next message. A tool you have not
+been granted shows as `not granted` rather than being hidden, so you can see
+what to ask an operator for.
+
+The same thing over HTTP:
+
+```bash
+# authenticated: names, transports, tool lists, and why a server failed
+curl -s localhost:8080/v1/tools -H "authorization: Bearer $(cat .harness-key)" | jq .mcp_servers
+```
+```json
+[
+  {"name": "github", "state": "failed", "transport": "http", "tool_count": 0,
+   "tools": [], "error": "environment variable 'GITHUB_TOKEN' is not set"},
+  {"name": "off", "state": "disabled", "transport": "stdio", "tool_count": 0,
+   "tools": [], "error": null},
+  {"name": "tiny", "state": "connected", "transport": "stdio", "tool_count": 2,
+   "tools": ["tiny_add", "tiny_echo"], "error": null}
+]
+```
+
+`GET /v1/health` carries **counts only** — `servers_connected`,
+`servers_failed`, `servers_disabled`, `tools`. That route is unauthenticated,
+and a server name can be an internal hostname, so names and error text stay
+behind auth.
+
+Servers are loaded **independently**, so one missing token disables only its
+own server and the error names the variable. Avoid `continue_on_error: true`
+for that reason: it makes the skip silent, replacing "environment variable
+'GITHUB_TOKEN' is not set" with nothing useful.
+
 Servers connect **once at startup**, not per request: an MCP server is a
 session, and paying stdio process spawn or an HTTP handshake on every turn
 would dominate a short turn's latency. A server that fails to start is logged
@@ -520,7 +556,7 @@ These are design boundaries of this version, not bugs:
 ## Tests
 
 ```bash
-.venv/bin/python -m pytest -q      # 145 tests, no credentials, no network
+.venv/bin/python -m pytest -q      # 151 tests, no credentials, no network
 .venv/bin/ruff check . && .venv/bin/ruff format --check .
 ```
 

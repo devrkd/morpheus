@@ -572,3 +572,123 @@ def test_an_unconfigured_mcp_tool_is_unknown(mcp_client):
     )
     assert response.status_code == 400
     assert "Unknown tool" in response.json()["error"]["message"]
+
+
+# --- MCP status, as the UI consumes it -----------------------------------
+
+
+def test_health_reports_mcp_counts_without_naming_servers(mcp_client):
+    """Health is unauthenticated, and a server name can be an internal
+    hostname, so names and error text stay out of it."""
+    body = mcp_client.get("/v1/health").json()
+    mcp = body["mcp"]
+
+    assert mcp["configured"] is True
+    assert mcp["servers_connected"] == 1
+    assert mcp["tools"] == 2
+    # No identifying detail on the open route.
+    raw = mcp_client.get("/v1/health").text
+    assert "tiny" not in raw
+    assert "error" not in json.dumps(mcp)
+
+
+def test_health_says_so_when_mcp_is_not_configured(client):
+    mcp = client.get("/v1/health").json()["mcp"]
+    assert mcp["configured"] is False
+    assert mcp["servers_configured"] == 0 and mcp["tools"] == 0
+
+
+def test_tools_reports_per_server_status(mcp_client):
+    body = mcp_client.get("/v1/tools", headers=auth(ALICE_KEY)).json()
+    servers = {s["name"]: s for s in body["mcp_servers"]}
+
+    assert servers["tiny"]["state"] == "connected"
+    assert servers["tiny"]["transport"] == "stdio"
+    assert servers["tiny"]["tool_count"] == 2
+    assert servers["tiny"]["tools"] == ["tiny_add", "tiny_echo"]
+    assert servers["tiny"]["error"] is None
+
+
+def test_a_failed_or_disabled_server_is_still_listed(_wire, tmp_path):
+    """ "Configured but missing from the list" is the one answer that helps
+    nobody debug, so every configured server appears with its state."""
+    import json as _json
+    import sys
+    from pathlib import Path as _Path
+
+    server = _Path(__file__).parent / "fixtures" / "tiny_mcp_server.py"
+    config = tmp_path / "mcp.json"
+    config.write_text(
+        _json.dumps(
+            {
+                "mcpServers": {
+                    "tiny": {
+                        "command": sys.executable,
+                        "args": [str(server)],
+                        "prefix": "tiny",
+                    },
+                    "broken": {"command": "/nonexistent/binary", "args": []},
+                    "off": {"command": "false", "args": [], "disabled": True},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    app_settings = Settings(
+        ANTHROPIC_API_KEY="test-anthropic",
+        HARNESS_ALLOW_ANONYMOUS=True,
+        HARNESS_SESSION_DIR=str(tmp_path / "s"),
+        HARNESS_MCP_CONFIG=str(config),
+        _env_file=None,
+    )
+    with TestClient(app_module.create_app(app_settings)) as c:
+        servers = {s["name"]: s for s in c.get("/v1/tools").json()["mcp_servers"]}
+        counts = c.get("/v1/health").json()["mcp"]
+
+    assert servers["tiny"]["state"] == "connected"
+    assert servers["broken"]["state"] == "failed"
+    assert servers["broken"]["error"], "a failed server must explain itself"
+    assert servers["off"]["state"] == "disabled"
+    assert servers["off"]["error"] is None
+
+    assert counts["servers_configured"] == 3
+    assert counts["servers_connected"] == 1
+    assert counts["servers_failed"] == 1
+    assert counts["servers_disabled"] == 1
+
+
+def test_comment_keys_in_the_config_are_not_treated_as_servers(_wire, tmp_path):
+    """The example config annotates itself with `_comment` and `_note` keys."""
+    import json as _json
+
+    config = tmp_path / "mcp.json"
+    config.write_text(
+        _json.dumps(
+            {
+                "_comment": ["docs"],
+                "mcpServers": {"_note": "explanatory", "off": {"command": "x", "disabled": True}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    app_settings = Settings(
+        HARNESS_ALLOW_ANONYMOUS=True,
+        HARNESS_SESSION_DIR=str(tmp_path / "s"),
+        HARNESS_MCP_CONFIG=str(config),
+        _env_file=None,
+    )
+    with TestClient(app_module.create_app(app_settings)) as c:
+        servers = [s["name"] for s in c.get("/v1/tools").json()["mcp_servers"]]
+    assert servers == ["off"]
+
+
+def test_the_web_client_renders_tool_status(client):
+    """The panel is what makes status visible, so its wiring is asserted."""
+    page = client.get("/app/").text
+    assert "tool-list" in page and "refreshTools" in page
+    assert "/v1/tools" in page
+    # status dots for each state
+    for state in ("connected", "failed", "disabled"):
+        assert f".dot.{state}" in page
+    # and it must actually send the selection
+    assert "payload.tools = [...enabledTools]" in page
