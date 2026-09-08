@@ -423,11 +423,33 @@ turns off authentication, it does not confer capability. Using MCP tools
 therefore requires a principals file, which is the point rather than a
 limitation.
 
-Tools are named `<prefix>_<tool>`, so a glob grants a whole server:
+Tools are named `<prefix>_<tool>` — the `prefix` from the server's config plus
+the server's own tool name — so `get_commit` from a server prefixed `github`
+becomes `github_get_commit`. Grant by exact name or by glob:
+
+```bash
+scripts/grant-tools.sh local-dev github_get_commit    # one tool
+scripts/grant-tools.sh local-dev 'github_*'           # the whole server
+scripts/grant-tools.sh --revoke local-dev github_create_issue
+scripts/grant-tools.sh --list                         # who has what
+```
+
+That edits the principals file, which is equivalent to:
 
 ```json
-{ "id": "team-a", "allowed_tools": ["github_*", "gdrive_search"] }
+{ "id": "team-a", "allowed_tools": ["github_get_commit", "gdrive_search"] }
 ```
+
+**Restart the server afterwards** — principals are read at startup.
+
+Read names from `GET /v1/tools` rather than guessing: a name that does not
+exist is a `400 Unknown tool`, and the two layers are independent. A server's
+`tool_filters` decides which tools *exist*; `allowed_tools` decides who may
+call them. Filtering a tool out means no grant can reach it.
+
+Revoking an exact name does **not** override a glob that still covers it —
+`grant-tools.sh` warns when that happens, since believing you removed access
+when you did not is the expensive mistake.
 
 A glob is the practical unit — adding a server should not mean re-enumerating
 every principal's tool list. `"*"` grants everything; treat it as an operator
