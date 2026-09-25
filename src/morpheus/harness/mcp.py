@@ -35,7 +35,7 @@ from typing import Any
 
 from strands.tools.mcp import MCPClient
 
-logger = logging.getLogger("model_harness.mcp")
+logger = logging.getLogger("morpheus.mcp")
 
 
 @dataclass

@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "model-harness"
+name = "morpheus"
 version = "0.1.0"
 description = "Bedrock-style unified inference service that routes one Converse API to Anthropic and OpenAI"
 requires-python = ">=3.11"
@@ -29,10 +29,10 @@ dev = [
 ]
 
 [project.scripts]
-model-harness = "model_harness.__main__:main"
+morpheus = "morpheus.__main__:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/model_harness"]
+packages = ["src/morpheus"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from model_harness.providers.credentials import (
+from morpheus.providers.credentials import (
     CredentialSource,
     detect_anthropic,
     detect_openai,

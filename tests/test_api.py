@@ -7,10 +7,10 @@ import json
 import pytest
 from fastapi.testclient import TestClient
 
-from model_harness.api import app as app_module
-from model_harness.api import deps
-from model_harness.auth.principals import hash_key
-from model_harness.config import Settings
+from morpheus.api import app as app_module
+from morpheus.api import deps
+from morpheus.auth.principals import hash_key
+from morpheus.config import Settings
 
 from .conftest import ALICE_KEY, BOB_KEY, DISABLED_KEY, SONNET_ONLY_KEY, ScriptedModel
 
@@ -362,7 +362,7 @@ def test_streaming_respects_session_ownership(authed):
 def test_the_web_client_is_served_same_origin(client):
     page = client.get("/app/")
     assert page.status_code == 200
-    assert "model-harness" in page.text
+    assert "morpheus" in page.text
     assert client.get("/", follow_redirects=False).status_code in (307, 308)
     for secret in ("mh_test", "sk-ant", "sk-proj"):
         assert secret not in page.text
@@ -376,7 +376,7 @@ def test_an_unhandled_exception_still_returns_json(_wire, settings, monkeypatch)
     client parsing JSON failed with a parse error instead of showing the
     problem. That is how a provider misconfiguration surfaced in the web
     client as `Unexpected token 'I'`."""
-    from model_harness.harness.runner import AgentRunner
+    from morpheus.harness.runner import AgentRunner
 
     async def boom(self, request, principal):
         raise KeyError("max_tokens")
@@ -404,8 +404,8 @@ def test_every_catalog_model_can_actually_be_constructed(settings):
     injects a scripted model."""
     import warnings
 
-    from model_harness.core.registry import known_ids, resolve
-    from model_harness.harness.models import ModelFactory
+    from morpheus.core.registry import known_ids, resolve
+    from morpheus.harness.models import ModelFactory
 
     factory = ModelFactory(settings)
     for model_id in known_ids():

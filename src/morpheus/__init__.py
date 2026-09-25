@@ -1,4 +1,4 @@
-"""model-harness: one Converse API in front of many model providers."""
+"""morpheus: one Converse API in front of many model providers."""
 
 from .config import Settings, get_settings
 

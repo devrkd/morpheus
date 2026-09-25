@@ -167,7 +167,7 @@ def _principal_from_dict(entry: object, path: Path) -> Principal:
         raise ValueError(
             f"Principals file {path}: entry '{entry['id']}' contains a raw 'key' "
             "field. Store only 'key_sha256'; mint keys with "
-            "`model-harness mint-key`."
+            "`morpheus mint-key`."
         )
 
     allowed = entry.get("allowed_models")

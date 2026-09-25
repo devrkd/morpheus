@@ -7,16 +7,16 @@ import json
 import pytest
 from fastapi.testclient import TestClient
 
-from model_harness.api.app import ConfigurationError, create_app
-from model_harness.auth.principals import (
+from morpheus.api.app import ConfigurationError, create_app
+from morpheus.auth.principals import (
     KEY_PREFIX,
     Principal,
     PrincipalStore,
     hash_key,
     mint_key,
 )
-from model_harness.config import Settings
-from model_harness.errors import InvalidCredentialError
+from morpheus.config import Settings
+from morpheus.errors import InvalidCredentialError
 
 from .conftest import ALICE_KEY, DISABLED_KEY, SONNET_ONLY_KEY
 

@@ -14,9 +14,9 @@ from pathlib import Path
 import pytest
 from strands.models.model import Model
 
-from model_harness.auth.principals import Principal, hash_key
-from model_harness.config import Settings
-from model_harness.core.types import (
+from morpheus.auth.principals import Principal, hash_key
+from morpheus.config import Settings
+from morpheus.core.types import (
     ConverseRequest,
     Message,
     Role,
@@ -24,16 +24,16 @@ from model_harness.core.types import (
     SystemBlock,
     TextBlock,
 )
-from model_harness.errors import (
+from morpheus.errors import (
     InvalidRequestError,
     ModelNotPermittedError,
     SessionNotFoundError,
     ToolNotPermittedError,
     UnknownModelError,
 )
-from model_harness.harness.models import ModelFactory
-from model_harness.harness.ownership import OwnershipIndex
-from model_harness.harness.runner import AgentRunner
+from morpheus.harness.models import ModelFactory
+from morpheus.harness.ownership import OwnershipIndex
+from morpheus.harness.runner import AgentRunner
 
 from .conftest import ScriptedModel
 
@@ -278,7 +278,7 @@ async def test_sampling_is_dropped_for_models_that_reject_it(tmp_path, settings,
     """The frontier Anthropic models and OpenAI's reasoning models answer a
     stray temperature with a 400, so forwarding a caller's harmless default
     would break a request that ought to succeed."""
-    from model_harness.core.types import InferenceConfig
+    from morpheus.core.types import InferenceConfig
 
     runner = build(tmp_path, settings, ScriptedModel([{"text": "ok"}]))
     result = await runner.converse(
@@ -296,8 +296,8 @@ async def test_sampling_is_dropped_for_models_that_reject_it(tmp_path, settings,
 
 def test_sampling_reaches_a_model_that_accepts_it(settings):
     """Verified on the real provider config, not just reported."""
-    from model_harness.core.registry import resolve as resolve_model
-    from model_harness.harness.models import ModelFactory
+    from morpheus.core.registry import resolve as resolve_model
+    from morpheus.harness.models import ModelFactory
 
     factory = ModelFactory(settings)
     model = factory.build(resolve_model("gpt-4o"), max_tokens=2048, sampling={"temperature": 0.3})
@@ -307,7 +307,7 @@ def test_sampling_reaches_a_model_that_accepts_it(settings):
 
 
 async def test_top_k_is_dropped_for_openai_only(tmp_path, settings, alice):
-    from model_harness.core.types import InferenceConfig
+    from morpheus.core.types import InferenceConfig
 
     runner = build(tmp_path, settings, ScriptedModel([{"text": "ok"}]))
     result = await runner.converse(
@@ -322,7 +322,7 @@ async def test_top_k_is_dropped_for_openai_only(tmp_path, settings, alice):
 
 
 async def test_max_tokens_is_capped_to_the_model_ceiling(tmp_path, settings, alice):
-    from model_harness.core.types import InferenceConfig
+    from morpheus.core.types import InferenceConfig
 
     runner = build(tmp_path, settings, ScriptedModel([{"text": "ok"}]))
     result = await runner.converse(
@@ -345,8 +345,8 @@ async def test_a_principal_ceiling_is_enforced_not_just_declared(tmp_path, setti
 
 
 def test_the_principal_ceiling_reaches_the_provider_config(settings):
-    from model_harness.core.registry import resolve as resolve_model
-    from model_harness.harness.models import ModelFactory
+    from morpheus.core.registry import resolve as resolve_model
+    from morpheus.harness.models import ModelFactory
 
     factory = ModelFactory(settings)
     model = factory.build(resolve_model("claude-opus-5"), max_tokens=500)
@@ -555,7 +555,7 @@ async def test_a_stalled_turn_times_out_rather_than_hanging(tmp_path, settings, 
     open for the SDK's whole timeout with nothing to show the caller."""
     import asyncio
 
-    from model_harness.errors import ProviderTimeoutError
+    from morpheus.errors import ProviderTimeoutError
 
     class Stalls(ScriptedModel):
         async def stream(self, *a, **kw):

@@ -11,7 +11,7 @@ BASE="${1:-http://127.0.0.1:8080}"
 KEY="$(cat "$(dirname "$0")/../.harness-key" 2>/dev/null || true)"
 if [ -z "$KEY" ]; then
   echo "No .harness-key found. Mint one:" >&2
-  echo "  python -m model_harness mint-key --id local-dev" >&2
+  echo "  python -m morpheus mint-key --id local-dev" >&2
   exit 1
 fi
 

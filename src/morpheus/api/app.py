@@ -17,7 +17,7 @@ from ..errors import HarnessError, ProviderRateLimitError
 from .deps import build_mcp, build_runner
 from .routes import router
 
-logger = logging.getLogger("model_harness")
+logger = logging.getLogger("morpheus")
 
 
 class ConfigurationError(RuntimeError):
@@ -56,7 +56,7 @@ def _load_principals(settings: Settings) -> PrincipalStore | None:
     raise ConfigurationError(
         "Inbound authentication is not configured. Either set "
         "HARNESS_PRINCIPALS_FILE to a principals file (mint a key with "
-        "`model-harness mint-key --id <name>`), or set "
+        "`morpheus mint-key --id <name>`), or set "
         "HARNESS_ALLOW_ANONYMOUS=true to run with no authentication — which "
         "lets anyone who can reach this port spend the provider credentials."
     )
@@ -117,7 +117,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     resolved = settings or get_settings()
 
     app = FastAPI(
-        title="model-harness",
+        title="morpheus",
         version="0.3.0",
         description=(
             "A Bedrock-style unified inference service. One Converse API, one model "
@@ -138,7 +138,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             headers["Retry-After"] = str(exc.retry_after)
         if exc.status_code == 401:
             # RFC 9110: a 401 must say how to authenticate.
-            headers["WWW-Authenticate"] = 'Bearer realm="model-harness"'
+            headers["WWW-Authenticate"] = 'Bearer realm="morpheus"'
 
         # The full detail goes to the log against error_id; the response gets
         # only what the error class considers safe to expose.
@@ -192,4 +192,4 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 # misconfiguration would surface as an ImportError from whatever happened to
 # import this module first. Serve it as a factory instead:
 #
-#     uvicorn --factory model_harness.api.app:create_app
+#     uvicorn --factory morpheus.api.app:create_app

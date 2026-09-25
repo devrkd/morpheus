@@ -12,8 +12,8 @@ import json
 import pytest
 from strands.models.model import Model
 
-from model_harness.auth.principals import Principal, PrincipalStore, hash_key
-from model_harness.config import Settings
+from morpheus.auth.principals import Principal, PrincipalStore, hash_key
+from morpheus.config import Settings
 
 ALICE_KEY = "mh_test_alice_key"
 BOB_KEY = "mh_test_bob_key"

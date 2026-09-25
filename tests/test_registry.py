@@ -8,7 +8,7 @@ call, so it stays static.
 
 from __future__ import annotations
 
-from model_harness.core.registry import Provider, ThinkingStyle, known_ids, resolve
+from morpheus.core.registry import Provider, ThinkingStyle, known_ids, resolve
 
 
 def test_resolves_canonical_ids_and_aliases():

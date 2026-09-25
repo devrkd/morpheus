@@ -1,7 +1,7 @@
 """Translating provider and framework failures into our error vocabulary.
 
 Before the migration each adapter mapped its SDK's typed exceptions onto
-:mod:`model_harness.errors`. Strands calls the provider SDKs directly, so
+:mod:`morpheus.errors`. Strands calls the provider SDKs directly, so
 without this every provider failure — a rejected key, a rate limit, an
 oversized prompt — reached the client as an unexplained 500. That regression
 is what turned a missing credential into `Unexpected token 'I'` in the web

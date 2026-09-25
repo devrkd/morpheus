@@ -1,4 +1,4 @@
-"""``python -m model_harness`` / ``model-harness`` entrypoint.
+"""``python -m morpheus`` / ``morpheus`` entrypoint.
 
 Two subcommands: ``serve`` (the default) and ``mint-key``, which exists so
 that creating an inbound credential never requires hand-computing a hash or
@@ -31,7 +31,7 @@ def _serve() -> int:
     # Single worker: the default session store lives in this process, so a
     # second worker would not see sessions created by the first.
     uvicorn.run(
-        "model_harness.api.app:create_app",
+        "morpheus.api.app:create_app",
         factory=True,
         host=settings.host,
         port=settings.port,
@@ -57,7 +57,7 @@ def _mint_key(principal_id: str, models: list[str] | None, max_tokens: int | Non
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(prog="model-harness")
+    parser = argparse.ArgumentParser(prog="morpheus")
     sub = parser.add_subparsers(dest="command")
 
     sub.add_parser("serve", help="Run the HTTP service (default)")

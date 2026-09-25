@@ -12,10 +12,10 @@ from pathlib import Path
 
 import pytest
 
-from model_harness.auth.principals import Principal, hash_key
-from model_harness.errors import ToolNotPermittedError
-from model_harness.harness.mcp import McpRegistry
-from model_harness.harness.tools import ToolCatalog
+from morpheus.auth.principals import Principal, hash_key
+from morpheus.errors import ToolNotPermittedError
+from morpheus.harness.mcp import McpRegistry
+from morpheus.harness.tools import ToolCatalog
 
 SERVER = Path(__file__).parent / "fixtures" / "tiny_mcp_server.py"
 

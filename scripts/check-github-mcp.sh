@@ -27,7 +27,7 @@ printf 'token:    %s… (%s chars)\n' "${TOKEN:0:8}" "${#TOKEN}"
 printf 'kind:     %s\n' "$KIND"
 printf 'endpoint: %s\n\n' "$ENDPOINT"
 
-BODY='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"model-harness-check","version":"1"}}}'
+BODY='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"morpheus-check","version":"1"}}}'
 
 TMPBASE="${TMPDIR:-/tmp}"
 HEADERS=$(mktemp "$TMPBASE/mcpcheck-h.XXXXXX")

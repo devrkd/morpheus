@@ -1,4 +1,4 @@
-# model-harness
+# morpheus
 
 A Bedrock-style unified inference service. One HTTP API, one model id per
 request; the harness picks the provider and translates both ways. Ask for
@@ -27,11 +27,11 @@ cp .env.example .env
 export ANTHROPIC_API_KEY=sk-ant-...
 
 # Inbound: who may call the harness. Startup fails without this.
-.venv/bin/python -m model_harness mint-key --id me > /tmp/minted
+.venv/bin/python -m morpheus mint-key --id me > /tmp/minted
 # paste the printed entry into ./principals.json, then:
 export HARNESS_PRINCIPALS_FILE=./principals.json
 
-.venv/bin/python -m model_harness
+.venv/bin/python -m morpheus
 ```
 
 Interactive docs at `http://127.0.0.1:8080/docs`.
@@ -177,7 +177,7 @@ A caller presents a harness-issued key as `Authorization: Bearer mh_…`. Keys
 are minted by an operator and stored only as a SHA-256 digest:
 
 ```bash
-model-harness mint-key --id team-exchange \
+morpheus mint-key --id team-exchange \
   --models claude-sonnet-5,gpt-5 --max-tokens-per-turn 4000
 ```
 
@@ -221,7 +221,7 @@ nor `HARNESS_ALLOW_ANONYMOUS=true` is an error, not a default:
 ```
 error: Inbound authentication is not configured. Either set
 HARNESS_PRINCIPALS_FILE to a principals file (mint a key with
-`model-harness mint-key --id <name>`), or set HARNESS_ALLOW_ANONYMOUS=true to
+`morpheus mint-key --id <name>`), or set HARNESS_ALLOW_ANONYMOUS=true to
 run with no authentication — which lets anyone who can reach this port spend
 the provider credentials.
 ```
@@ -516,7 +516,7 @@ types are all provider-agnostic.
 ## Layout
 
 ```
-src/model_harness/
+src/morpheus/
   __main__.py                  `serve` and `mint-key` subcommands
   config.py                    Settings from env / .env
   errors.py                    Error hierarchy -> status, codes, sanitization

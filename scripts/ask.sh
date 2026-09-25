@@ -34,7 +34,7 @@ if [ -z "$SESSION" ] && [ -n "$CONTINUE" ]; then
   [ -z "$SESSION" ] && echo "note: no previous session recorded; starting a new one" >&2
 fi
 KEY="$(cat .harness-key 2>/dev/null || true)"
-[ -z "$KEY" ] && { echo "No .harness-key — run: python -m model_harness mint-key --id local-dev" >&2; exit 1; }
+[ -z "$KEY" ] && { echo "No .harness-key — run: python -m morpheus mint-key --id local-dev" >&2; exit 1; }
 
 # A model has no clock. To let it answer a "what time is it" style question,
 # the time has to travel in the request. It is appended to the USER turn, not

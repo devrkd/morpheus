@@ -130,7 +130,7 @@ async def http_fetch(url: str, method: str = "GET", body: str | None = None) -> 
                 response = await client.request(
                     method,
                     current,
-                    headers={"user-agent": "model-harness/0.3 (+tool http_request)"},
+                    headers={"user-agent": "morpheus/0.3 (+tool http_request)"},
                     content=body if method not in SAFE_METHODS else None,
                 )
             except httpx.TimeoutException as exc:

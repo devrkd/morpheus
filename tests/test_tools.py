@@ -13,14 +13,14 @@ from pathlib import Path
 
 import pytest
 
-from model_harness.harness.tools import DANGEROUS, ToolCatalog
-from model_harness.tools.guarded import (
+from morpheus.harness.tools import DANGEROUS, ToolCatalog
+from morpheus.tools.guarded import (
     ToolError,
     current_time,
     http_fetch,
     truncate,
 )
-from model_harness.tools.net import AddressRejected, resolve_and_check
+from morpheus.tools.net import AddressRejected, resolve_and_check
 
 # --- SSRF guards: the reason we did not adopt the vended tool -------------
 
@@ -128,7 +128,7 @@ def test_code_execution_is_not_reimplemented():
     """Strands ships real sandboxes (docker, ssh, posix), so our bare
     subprocess was a regression to keep."""
     assert "run_python" not in {t["name"] for t in ToolCatalog().describe()}
-    assert not Path("src/model_harness/tools/builtin.py").exists()
+    assert not Path("src/morpheus/tools/builtin.py").exists()
 
 
 def test_no_tools_requested_resolves_to_none(alice):
