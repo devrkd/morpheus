@@ -1,3 +1,30 @@
 title: Morpheus
 description: A Bedrock-style unified inference service — one API, one model id, any provider
 markdown: GFM
+
+# GitHub Pages project site — makes absolute/relative URLs resolve correctly.
+url: https://devrkd.github.io
+baseurl: /morpheus
+
+# Every Markdown page renders through the custom layout in _layouts/default.html.
+defaults:
+  - scope:
+      path: ""
+      type: pages
+    values:
+      layout: default
+
+# Side navigation ("Pages" group). Labels/URLs here feed _layouts/default.html.
+nav:
+  - label: Home
+    url: /
+  - label: Capabilities
+    url: /features.html
+  - label: Architecture
+    url: /architecture.html
+  - label: Getting started
+    url: /getting-started.html
+  - label: Operating it
+    url: /operations.html
+  - label: Publishing this site
+    url: /publishing.html

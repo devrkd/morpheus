@@ -15,6 +15,9 @@ Chosen because it is the simplest reliable option:
 - **Markdown is the project's documentation language** — content stays reviewable in the repo
   and readable on GitHub.com before it is ever published.
 - **`/docs` on `main` keeps the docs versioned with the code** they describe.
+- **Custom look, still zero build tooling.** A hand-written `_layouts/default.html` plus
+  `assets/css/style.css` (a port of the blog's design) give the site its styling — Jekyll
+  renders it all on push, still no workflow file, no Node toolchain.
 
 ## Enabling GitHub Pages (one-time, human action)
 
@@ -38,13 +41,25 @@ as a check on each commit. Free-tier Pages requires a public repository — this
 title: Morpheus
 description: A Bedrock-style unified inference service — one API, one model id, any provider
 markdown: GFM
+url: https://devrkd.github.io
+baseurl: /morpheus
+defaults:
+  - scope: { path: "", type: pages }
+    values: { layout: default }
+nav:
+  - label: Home
+    url: /
+  # ... one entry per page; see the repo for the full list
 ```
 
 - `markdown: GFM` makes the renderer match GitHub's own UI (tables, lists, fenced code render
   identically in the repo browser and on the published site).
-- No theme is declared, so the default Primer theme applies. To change the look later, add a
-  line such as `theme: minima` or `theme: jekyll-theme-cayman` — one-line change, no other
-  setup.
+- `url` and `baseurl` make canonical links and asset paths resolve correctly under the project
+  subpath. If the repo is renamed, these two lines are the only places that need updating.
+- `defaults` applies `_layouts/default.html` to every page, so the Markdown files stay plain
+  (no front matter required). The layout provides the masthead, side navigation, footer, and
+  dark-mode toggle, and loads `assets/css/style.css` — the blog's design, ported. No theme gem
+  is declared; the default Primer theme is bypassed by the custom layout.
 
 ## Content conventions
 
@@ -55,8 +70,12 @@ markdown: GFM
 - **Only portable Markdown** is used: headings, tables, lists, fenced code blocks, and ASCII
   diagrams. The default Pages pipeline does not render Mermaid, and some kramdown-only syntax
   is unavailable under GFM.
-- **One level of headings per page**, no front matter, no assets — everything renders with the
-  default theme out of the box.
+- **One H1 per page**, no front matter required. The layout uses the H1 as the page title
+  (Jekyll's `jekyll-titles-from-headings`) and builds an "On this page" index from the H2/H3
+  headings. Optional front matter (`kicker`, `sub`, `description`, `chips`, `note`) tweaks the
+  masthead; without it, every page still renders correctly.
+- **Styling lives in `assets/css/style.css` and `_layouts/default.html`.** They are a port of
+  the blog's design; changes to the blog's stylesheet should be mirrored here.
 
 ## Updating content
 

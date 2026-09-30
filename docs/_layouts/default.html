@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    {%- assign page_title = page.title | default: site.title -%}
+    {%- assign page_desc = page.description | default: site.description -%}
+    <title>{% if page.url == "/" %}{{ page_title }}{% else %}{{ page_title }} · {{ site.title }}{% endif %}</title>
+    <meta name="description" content="{{ page_desc }}">
+    <link rel="canonical" href="{{ page.url | absolute_url }}">
+    <meta property="og:title" content="{{ page_title }}">
+    <meta property="og:description" content="{{ page_desc }}">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="{{ page.url | absolute_url }}">
+    <meta name="generator" content="Jekyll">
+    <link rel="stylesheet" href="{{ "/assets/css/style.css" | relative_url }}">
+
+    <!-- Applies the saved theme before first paint, so there is no flash of
+         the wrong palette. Must stay inline and blocking — deferring it defeats
+         the purpose. -->
+    <script>
+      (function () {
+        try {
+          var saved = localStorage.getItem('site-theme');
+          if (saved === 'light' || saved === 'dark') {
+            document.documentElement.setAttribute('data-theme', saved);
+          } else if (saved === 'system') {
+            document.documentElement.removeAttribute('data-theme');
+          }
+        } catch (e) {
+          /* Storage can throw in private mode or with cookies blocked.
+             Falling through leaves the dark default in place. */
+        }
+      })();
+    </script>
+  </head>
+
+  <body>
+    <header class="top">
+      <div class="inner">
+        <div class="kicker">{{ page.kicker | default: "Docs" }}</div>
+        <h1>{{ page_title }}</h1>
+        <p class="sub">{{ page.sub | default: page_desc }}</p>
+
+        {% if page.chips %}
+        <div class="metarow">
+          {% for chip in page.chips %}<span class="chip">{{ chip }}</span>{% endfor %}
+        </div>
+        {% endif %}
+
+        {% if page.note %}<p class="tiny" style="margin:16px 0 0">{{ page.note }}</p>{% endif %}
+      </div>
+    </header>
+
+    <div class="wrap">
+      <div class="cols">
+        <nav class="side" aria-label="Contents">
+          <p class="nav-h">Pages</p>
+          {% for item in site.nav %}
+          <a href="{{ item.url | relative_url }}"{% if item.url == page.url %} aria-current="page"{% endif %}>{{ item.label }}</a>
+          {% endfor %}
+
+          <div class="gap"></div>
+
+          <div id="toc-group" hidden>
+            <p class="nav-h">On this page</p>
+          </div>
+        </nav>
+
+        <main>
+          {{ content }}
+        </main>
+      </div>
+
+      <footer>
+        <p>{{ site.title }} · Built with Jekyll, served by GitHub Pages · <a href="https://github.com/devrkd/morpheus">Source on GitHub</a></p>
+      </footer>
+    </div>
+
+    <button class="themebtn" id="themeBtn" type="button" aria-live="polite">&#9728; Dark</button>
+
+    <script>
+      (function () {
+        var btn = document.getElementById('themeBtn');
+        if (!btn) return;
+
+        var KEY = 'site-theme';
+        var order = ['system', 'light', 'dark'];
+        var i = order.indexOf('dark');
+
+        try {
+          var saved = localStorage.getItem(KEY);
+          if (saved) i = Math.max(0, order.indexOf(saved));
+        } catch (e) {
+          /* no stored preference available */
+        }
+
+        function apply() {
+          var mode = order[i];
+          if (mode === 'system') {
+            document.documentElement.removeAttribute('data-theme');
+          } else {
+            document.documentElement.setAttribute('data-theme', mode);
+          }
+          btn.textContent = '☀ ' + mode.charAt(0).toUpperCase() + mode.slice(1);
+          try {
+            localStorage.setItem(KEY, mode);
+          } catch (e) {
+            /* preference is session-only */
+          }
+        }
+
+        btn.addEventListener('click', function () {
+          i = (i + 1) % order.length;
+          apply();
+        });
+
+        apply();
+      })();
+
+      /* Builds the "On this page" index from the rendered H2/H3 headings and
+         wraps each Markdown table in a .tw scroll container — both mirror what
+         the blog does at build time, without needing a Jekyll plugin. */
+      (function () {
+        var group = document.getElementById('toc-group');
+        if (group) {
+          var headings = document.querySelectorAll('main h2, main h3');
+          var count = 0;
+          headings.forEach(function (el) {
+            if (!el.id) return;
+            var a = document.createElement('a');
+            a.href = '#' + el.id;
+            a.textContent = el.textContent;
+            if (el.tagName === 'H3') a.style.paddingLeft = '24px';
+            group.appendChild(a);
+            count++;
+          });
+          if (count) group.hidden = false;
+        }
+
+        var tables = document.querySelectorAll('main table');
+        tables.forEach(function (t) {
+          var wrap = document.createElement('div');
+          wrap.className = 'tw';
+          t.parentNode.insertBefore(wrap, t);
+          wrap.appendChild(t);
+        });
+      })();
+    </script>
+  </body>
+</html>
