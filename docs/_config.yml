@@ -2,6 +2,10 @@ title: Morpheus
 description: A Bedrock-style unified inference service — one API, one model id, any provider
 markdown: GFM
 
+# Google Analytics 4 measurement id (gtag.js). Deliberately not the built-in
+# `google_analytics` key, which only supports legacy UA ids.
+ga_id: G-P3VYJTK1VN
+
 # GitHub Pages project site — makes absolute/relative URLs resolve correctly.
 url: https://devrkd.github.io
 baseurl: /morpheus

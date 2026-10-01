@@ -15,6 +15,18 @@
     <meta name="generator" content="Jekyll">
     <link rel="stylesheet" href="{{ "/assets/css/style.css" | relative_url }}">
 
+    <!-- Google Analytics 4 (gtag.js). The async loader must precede the inline
+         config snippet; Enhanced Measurement tracks pageviews and outbound
+         link clicks with no extra handlers. The loader is async, so it cannot
+         delay the theme-flash script below. -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id={{ site.ga_id }}"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', '{{ site.ga_id }}');
+    </script>
+
     <!-- Applies the saved theme before first paint, so there is no flash of
          the wrong palette. Must stay inline and blocking — deferring it defeats
          the purpose. -->
