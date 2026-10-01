@@ -647,6 +647,77 @@ footer p {
   border-color: var(--accent);
 }
 
+/* ---------- consent banner ---------- */
+
+.consent {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 70;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 20px;
+  background: var(--panel);
+  border-top: 1px solid var(--line);
+  box-shadow: var(--shadow);
+  font-size: 13.5px;
+  color: var(--ink-2);
+}
+
+.consent[hidden] {
+  display: none;
+}
+
+.consent-text {
+  margin: 0;
+  max-width: 64ch;
+}
+
+.consent-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.consent-btn {
+  font: 600 12px/1 var(--mono);
+  padding: 9px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  border: 1px solid var(--line-2);
+}
+
+.consent-btn:hover {
+  color: var(--accent-ink);
+  border-color: var(--accent);
+}
+
+.consent-accept {
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  border-color: var(--accent);
+}
+
+.consent-decline {
+  background: var(--panel-2);
+  color: var(--ink-2);
+  border-color: var(--line);
+}
+
+@media (max-width: 640px) {
+  .consent {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .consent-actions {
+    justify-content: flex-end;
+  }
+}
+
 /* ---------- markdown content adaptations ----------
    The blog authors content as hand-written HTML inside Astro components;
    the docs are Jekyll-rendered Markdown. These rules map the same design

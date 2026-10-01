@@ -15,10 +15,22 @@
     <meta name="generator" content="Jekyll">
     <link rel="stylesheet" href="{{ "/assets/css/style.css" | relative_url }}">
 
-    <!-- Google Analytics 4 (gtag.js). The async loader must precede the inline
-         config snippet; Enhanced Measurement tracks pageviews and outbound
-         link clicks with no extra handlers. The loader is async, so it cannot
+    <!-- Google Analytics 4 (gtag.js) with Consent Mode v2. The consent-default
+         script must run before anything else so no GA cookies are set until
+         the visitor chooses; the async loader then precedes the inline config
+         snippet. Enhanced Measurement tracks pageviews and outbound link
+         clicks with no extra handlers. The loader is async, so it cannot
          delay the theme-flash script below. -->
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('consent', 'default', {
+        ad_storage: 'denied',
+        ad_user_data: 'denied',
+        ad_personalization: 'denied',
+        analytics_storage: 'denied'
+      });
+    </script>
     <script async src="https://www.googletagmanager.com/gtag/js?id={{ site.ga_id }}"></script>
     <script>
       window.dataLayer = window.dataLayer || [];
@@ -157,6 +169,84 @@
           t.parentNode.insertBefore(wrap, t);
           wrap.appendChild(t);
         });
+      })();
+    </script>
+
+    <div id="consent" class="consent" hidden>
+      <p class="consent-text">This site uses Google Analytics to understand visitor traffic. Your choice applies to Google Analytics cookies only.</p>
+      <div class="consent-actions">
+        <button type="button" id="consent-accept" class="consent-btn consent-accept">Accept</button>
+        <button type="button" id="consent-decline" class="consent-btn consent-decline">Decline</button>
+      </div>
+    </div>
+
+    <script>
+      (function () {
+        var banner = document.getElementById('consent');
+        if (!banner) return;
+
+        var KEY = 'ga-consent';
+        var GRANTED = {
+          ad_storage: 'granted',
+          ad_user_data: 'granted',
+          ad_personalization: 'granted',
+          analytics_storage: 'granted'
+        };
+
+        function grant() {
+          window.dataLayer = window.dataLayer || [];
+          function gtag(){dataLayer.push(arguments);}
+          gtag('consent', 'update', GRANTED);
+        }
+
+        function show() { banner.hidden = false; }
+        function hide() { banner.hidden = true; }
+
+        function save(value) {
+          try {
+            localStorage.setItem(KEY, value);
+          } catch (e) {
+            /* Storage can throw in private mode or with cookies blocked. */
+          }
+        }
+
+        var choice = null;
+        try {
+          choice = localStorage.getItem(KEY);
+        } catch (e) {
+          /* No stored choice available. */
+        }
+
+        if (choice === 'granted') {
+          /* Consent state lives only in this page's dataLayer, so re-issue
+             the grant. A push before gtag.js finishes loading is buffered by
+             the dataLayer queue anyway. */
+          grant();
+          hide();
+        } else if (choice === 'denied') {
+          hide();
+        } else {
+          /* No choice yet: GA stays on the denied default. */
+          show();
+        }
+
+        var accept = document.getElementById('consent-accept');
+        var decline = document.getElementById('consent-decline');
+
+        if (accept) {
+          accept.addEventListener('click', function () {
+            save('granted');
+            grant();
+            hide();
+          });
+        }
+
+        if (decline) {
+          decline.addEventListener('click', function () {
+            save('denied');
+            hide();
+          });
+        }
       })();
     </script>
   </body>
