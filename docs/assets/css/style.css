@@ -503,6 +503,23 @@ pre code {
   margin: 0 0 6px;
 }
 
+/* Mermaid diagrams are built client-side from ```mermaid fenced blocks; the
+   container is hidden until the SVG renders, and scrolls if too wide. */
+.mermaid {
+  margin: 0 0 16px;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--panel);
+  overflow-x: auto;
+  text-align: center;
+}
+
+.mermaid svg {
+  max-width: 100%;
+  height: auto;
+}
+
 /* ---------- tables ---------- */
 
 .tw {

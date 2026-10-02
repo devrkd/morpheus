@@ -249,5 +249,105 @@
         }
       })();
     </script>
+
+    <!-- Mermaid: render ```mermaid fenced blocks client-side into diagrams.
+         GitHub Pages runs Jekyll in safe mode, so a Ruby plugin is off the
+         table; the library is pulled from a CDN only on pages that actually
+         contain a diagram. Diagrams are re-rendered when the theme switch
+         changes the palette. -->
+    <script>
+      (function () {
+        function mermaidSource(container) {
+          var pre = container.tagName === 'PRE' ? container : container.querySelector('pre');
+          return (pre || container).textContent.replace(/\s+$/, '');
+        }
+
+        function convert() {
+          /* Jekyll/Rouge wraps a fenced block as
+             <div class="language-mermaid highlighter-rouge">...<pre>...</pre></div>;
+             the fallback covers a bare <pre><code class="language-mermaid">. */
+          document.querySelectorAll('div.language-mermaid').forEach(function (block) {
+            var src = mermaidSource(block);
+            var div = document.createElement('div');
+            div.className = 'mermaid';
+            div.setAttribute('data-src', src);
+            div.style.visibility = 'hidden';
+            div.textContent = src;
+            block.parentNode.replaceChild(div, block);
+          });
+          document.querySelectorAll('pre > code.language-mermaid').forEach(function (code) {
+            var pre = code.parentNode;
+            var div = document.createElement('div');
+            div.className = 'mermaid';
+            div.setAttribute('data-src', code.textContent.replace(/\s+$/, ''));
+            div.style.visibility = 'hidden';
+            div.textContent = div.getAttribute('data-src');
+            pre.parentNode.replaceChild(div, pre);
+          });
+        }
+
+        function mode() {
+          var t = document.documentElement.getAttribute('data-theme');
+          if (t === 'light') return 'default';
+          if (t === 'dark') return 'dark';
+          var prefersLight = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches;
+          return prefersLight ? 'default' : 'dark';
+        }
+
+        function reveal(nodes) {
+          nodes.forEach(function (el) { el.style.visibility = ''; });
+        }
+
+        function draw() {
+          if (!window.mermaid) return;
+          var nodes = Array.prototype.slice.call(document.querySelectorAll('.mermaid'));
+          if (!nodes.length) return;
+          window.mermaid.initialize({ startOnLoad: false, securityLevel: 'strict', theme: mode() });
+          nodes.forEach(function (el) {
+            var src = el.getAttribute('data-src');
+            if (src !== null) {
+              el.removeAttribute('data-processed');
+              el.textContent = src;
+              el.style.visibility = 'hidden';
+            }
+          });
+          var done = window.mermaid.run({ nodes: nodes });
+          if (done && done.then) {
+            done.then(function () { reveal(nodes); }, function () { reveal(nodes); });
+          } else {
+            reveal(nodes);
+          }
+        }
+
+        function load(cb) {
+          var s = document.createElement('script');
+          s.src = 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js';
+          s.async = true;
+          s.onload = cb;
+          s.onerror = function () {
+            reveal(Array.prototype.slice.call(document.querySelectorAll('.mermaid')));
+          };
+          document.head.appendChild(s);
+        }
+
+        function ready() {
+          convert();
+          if (!document.querySelector('.mermaid')) return;
+          load(draw);
+          var btn = document.getElementById('themeBtn');
+          if (btn) {
+            btn.addEventListener('click', function () {
+              window.setTimeout(draw, 0);
+            });
+          }
+        }
+
+        if (document.readyState === 'loading') {
+          document.addEventListener('DOMContentLoaded', ready);
+        } else {
+          ready();
+        }
+      })();
+    </script>
   </body>
 </html>
