@@ -30,5 +30,3 @@ nav:
     url: /getting-started.html
   - label: Operating it
     url: /operations.html
-  - label: Publishing this site
-    url: /publishing.html

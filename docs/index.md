@@ -73,7 +73,6 @@ needs to know — how each provider's API differs.
 | [Architecture](architecture.md) | How it works internally, at a functional level |
 | [Getting started](getting-started.md) | Run it locally and have a first conversation |
 | [Operating it](operations.md) | Keys, principals, tools, health, and deployment notes |
-| [Publishing this site](publishing.md) | How this documentation is built and deployed |
 
 ## Project status
 
